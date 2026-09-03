@@ -131,6 +131,19 @@ _QUANTITY_WITH_UNIT_RE = re.compile(
     r"shares?|contracts?|lots?|units?|weeks?|months?|days?|years?)",
     re.IGNORECASE,
 )
+# Indicator lookback horizons are period counts, not prices: "50-day MA",
+# "200-day moving average", "14-period RSI", "20 EMA", "9-week SMA". The
+# hyphenated adjectival form ("50-day") is missed by the suffix matcher
+# above because the unit is part of the next word, so mask it explicitly.
+_INDICATOR_PERIOD_RE = re.compile(
+    r"\b\d{1,4}(?:\.\d+)?\s*[-–—]?\s*"
+    r"(?:day|week|month|year|period|session|bar)[- ]"
+    r"(?=(?:moving\s+average|ma|sma|ema|rsi|macd|atr|adx|vwap|"
+    r"high|low|average|lookback|window|zone|level|line)\b)"
+    r"|\b\d{1,4}\s*[-–—]?\s*"
+    r"(?=(?:period|session|bar)\s+(?:rsi|macd|ema|sma|atr|adx))",
+    re.IGNORECASE,
+)
 # Full-width brackets and enumeration commas delimit prose clauses. ASCII
 # parentheses are deliberately not separators: an explicit derivation such as
 # "(8.5 - 7.9) / 2" must stay in one segment for the formula check.
@@ -1459,6 +1472,7 @@ class GroundingLedger:
         masked = _LOCALIZED_DATE_RE.sub(" ", masked)
         masked = _DATE_RE.sub(" ", masked)
         masked = _AGGREGATE_AMOUNT_RE.sub(" ", masked)
+        masked = _INDICATOR_PERIOD_RE.sub(" ", masked)
         without_dates = _QUANTITY_WITH_UNIT_RE.sub(" ", masked)
         values: list[float] = []
         for match in _NUMBER_RE.finditer(without_dates):

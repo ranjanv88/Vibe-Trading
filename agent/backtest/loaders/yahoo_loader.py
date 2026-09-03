@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -46,10 +47,14 @@ def _is_supported(code: str) -> bool:
     Covers US/HK/India/Korea equities plus Yahoo's own futures (``GC=F``) and
     forex (``EURUSD=X``) suffix conventions, which the public chart endpoint
     serves verbatim (the code is used as-is in the request URL, no
-    conversion) (#718).
+    conversion) (#718). Bare US tickers (``AAPL``, ``NVDA``, ``BRK.B``) are
+    also accepted: they are valid Yahoo chart codes verbatim and previously
+    fell through every loader, leaving plain tickers unresolved (#us-bare).
     """
     upper = code.strip().upper()
-    return upper.endswith((".US", ".HK", ".NS", ".BO", ".KS", ".KQ", "=F", "=X"))
+    if upper.endswith((".US", ".HK", ".NS", ".BO", ".KS", ".KQ", "=F", "=X")):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", upper))
 
 
 def _to_yahoo_interval(interval: str) -> str:

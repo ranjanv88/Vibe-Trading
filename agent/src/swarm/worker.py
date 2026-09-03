@@ -178,11 +178,44 @@ def _estimate_tokens(
     return input_tokens, output_tokens
 
 
+def _fallback_missing(key: str) -> str:
+    """Hint the LLM to infer a template variable the caller did not supply."""
+    return f"(determine the appropriate {key} based on the objective)"
+
+
+class _TemplateVars(dict):
+    """Dict wrapper that turns a missing template key into an LLM-inference hint."""
+
+    def __missing__(self, key: str) -> str:
+        return _fallback_missing(key)
+
+
+def _render_system_prompt(
+    agent_spec: SwarmAgentSpec,
+    upstream_block: str,
+    user_vars: dict[str, str] | None,
+) -> str:
+    """Render an agent's ``system_prompt``: splice upstream, then substitute vars.
+
+    ``{upstream_context}`` is spliced first (it is multi-line markdown, not a
+    simple variable), then any remaining ``{target}``/``{market}``/custom
+    placeholders are resolved from ``user_vars``. Missing keys become an
+    LLM-inference hint instead of raising, so the worker never sees a bare
+    ``{target}`` and never falls back to a hardcoded example ticker.
+    """
+    prompt = agent_spec.system_prompt.replace("{upstream_context}", upstream_block)
+    try:
+        return prompt.format_map(_TemplateVars(user_vars or {}))
+    except (KeyError, ValueError):
+        return prompt
+
+
 def build_worker_prompt(
     agent_spec: SwarmAgentSpec,
     upstream_summaries: dict[str, str],
     skill_descriptions: str,
     grounding_block: str = "",
+    user_vars: dict[str, str] | None = None,
 ) -> str:
     """Build the worker's system prompt with role, upstream context, and skills.
 
@@ -195,6 +228,13 @@ def build_worker_prompt(
             ahead of the Execution Rules section so the worker sees real
             recent prices before any tool decision. Empty string skips the
             section entirely.
+        user_vars: User-provided template variables (e.g. ``{"target": "ANET.US",
+            "market": "US"}``). Substituted into any ``{target}``/``{market}``/
+            other placeholders left in the agent's ``system_prompt`` so the
+            worker's primary role instruction names the actual security instead
+            of a literal ``{target}`` (which previously caused workers to fall
+            back to a bundled default ticker). Missing keys become an
+            LLM-inference hint rather than raising ``KeyError``.
 
     Returns:
         Complete system prompt string for the worker LLM.
@@ -211,7 +251,7 @@ def build_worker_prompt(
 
     prompt_parts = [
         f"## Role\n\n{agent_spec.role}",
-        agent_spec.system_prompt.replace("{upstream_context}", upstream_block),
+        _render_system_prompt(agent_spec, upstream_block, user_vars),
     ]
 
     if skill_descriptions and skill_descriptions != "(no matching skills)":
@@ -358,6 +398,7 @@ def run_worker(
     skill_desc = _filter_skill_descriptions(skills_loader, agent_spec.skills)
     system_prompt = build_worker_prompt(
         agent_spec, upstream_summaries, skill_desc, grounding_block=grounding_block,
+        user_vars=user_vars,
     )
 
     # 4. Resolve prompt template with user vars (missing vars → LLM infers)

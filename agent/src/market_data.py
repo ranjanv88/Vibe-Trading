@@ -43,6 +43,10 @@ _SOURCE_PATTERNS = [
     # the 4-letter /USDT crypto rule above.
     (re.compile(r"^[A-Z]{3}/[A-Z]{3}$", re.I), "mt5"),
     (re.compile(r"^[A-Z]{6}\.FX$", re.I), "mt5"),
+    # Bare US tickers (AAPL, NVDA, BRK.B, M&M style US listings). Without
+    # this, plain tickers fell through to the ``tushare`` default and were
+    # routed to China-market loaders that cannot resolve them (#us-bare).
+    (re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$"), "yahoo"),
 ]
 
 

@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from pydantic import BaseModel
+
+
+class RunsDeleteRequest(BaseModel):
+    run_ids: List[str]
+
+import logging
+logger = logging.getLogger(__name__)
 from fastapi.responses import JSONResponse
 
 
@@ -291,6 +299,29 @@ def register_runs_routes(
             "exists": True,
             "content": pine_path.read_text(encoding="utf-8"),
         }
+
+    @app.post("/runs/delete", dependencies=[Depends(require_auth)])
+    async def delete_runs(req: RunsDeleteRequest):
+        """Permanently delete run directories (and their DB rows if present)."""
+        import shutil
+        runs_dir = _host_RUNS_DIR()
+        deleted, errors = [], []
+        for rid in req.run_ids:
+            try:
+                _host_validate_path_param(rid, "run_id")
+                d = runs_dir / rid
+                if not d.exists():
+                    errors.append({"run_id": rid, "error": "not found"})
+                    continue
+                import traceback
+                shutil.rmtree(d)
+                deleted.append(rid)
+            except HTTPException as exc:
+                errors.append({"run_id": rid, "error": str(exc.detail)})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("delete run %s failed", rid)
+                errors.append({"run_id": rid, "error": repr(exc)})
+        return {"deleted": deleted, "errors": errors}
 
     @app.get("/runs/{run_id}", response_model=RunResponse, dependencies=[Depends(require_auth)])
     async def get_run_result(
