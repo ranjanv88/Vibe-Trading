@@ -60,8 +60,11 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+")
 def _tokenize_for_tfidf(text: str) -> List[str]:
     """Tokenize text for TF-IDF scoring.
 
-    Uses same regex pattern as persistent.py: ASCII words >= 3 chars
-    or individual non-Latin script characters.
+    ASCII words >= 3 chars or individual non-Latin script characters.
+    Deliberately a higher minimum than persistent.py's retrieval tokenizer:
+    this only ranks sentences for summarization, not retrieval, so dropping
+    short tokens from scoring doesn't create the silent-miss failure mode
+    that a stricter retrieval tokenizer would.
     """
     return _TOKEN_RE.findall(text.lower())
 

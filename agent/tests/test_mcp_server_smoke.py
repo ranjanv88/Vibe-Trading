@@ -60,6 +60,8 @@ REQUIRED_TOOL_NAMES = {
     "trading_orders",
     "trading_quote",
     "trading_history",
+    "alpha_zoo",
+    "alpha_bench",
 }
 
 
@@ -232,3 +234,122 @@ def test_mcp_server_happy_path() -> None:
             proc.wait(timeout=5)
         except Exception:
             pass
+
+
+@pytest.mark.integration
+def test_mcp_stdio_projects_redacted_swarm_metadata(tmp_path: Path) -> None:
+    runtime_root = tmp_path / "runtime"
+    for run_id, created_at, provider, model, effort, responses in (
+        (
+            "mcp-status-run",
+            "2026-08-14T00:00:00+00:00",
+            "private-gateway",
+            "/private/socket",
+            "max",
+            True,
+        ),
+        (
+            "mcp-list-run",
+            "2026-08-14T00:00:01+00:00",
+            "openai",
+            "gateway/v1",
+            "high",
+            False,
+        ),
+    ):
+        run_dir = runtime_root / "swarm" / "runs" / run_id
+        for name in ("tasks", "inboxes", "artifacts"):
+            (run_dir / name).mkdir(parents=True, exist_ok=True)
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "id": run_id,
+                    "preset_name": "demo",
+                    "status": "completed",
+                    "created_at": created_at,
+                    "tasks": [],
+                    "provider": provider,
+                    "model": model,
+                    "reasoning_effort": effort,
+                    "use_responses_api": responses,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(AGENT_DIR) + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONUNBUFFERED"] = "1"
+    env["VIBE_TRADING_HOME"] = str(runtime_root)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "from mcp_server import main; main()"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=0,
+        env=env,
+        cwd=str(AGENT_DIR),
+    )
+    q: Queue = Queue()
+    threading.Thread(target=_reader, args=(proc.stdout, q), daemon=True).start()
+
+    try:
+        _send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "smoke-test", "version": "1"},
+                },
+            },
+        )
+        response, detail = _wait_for_id(q, 1, INIT_TIMEOUT)
+        assert response is not None, f"initialize did not respond (status={detail})"
+        assert "result" in response, f"initialize returned an error response: {response}"
+        _send(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+        _send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "get_swarm_status",
+                    "arguments": {"run_id": "mcp-status-run"},
+                },
+            },
+        )
+        response, detail = _wait_for_id(q, 2, CALL_TIMEOUT)
+        assert response is not None, f"get_swarm_status did not respond (status={detail})"
+        status = _extract_tool_result(response)
+        assert status["provider"] == "[redacted]"
+        assert status["model"] == "[redacted]"
+        assert status["reasoning_effort"] == "max"
+        assert status["use_responses_api"] is True
+
+        _send(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "list_runs", "arguments": {"limit": 5}},
+            },
+        )
+        response, detail = _wait_for_id(q, 3, CALL_TIMEOUT)
+        assert response is not None, f"list_runs did not respond (status={detail})"
+        runs = _extract_tool_result(response)
+        row = next(item for item in runs if item["run_id"] == "mcp-list-run")
+        assert row["provider"] == "openai"
+        assert row["model"] == "[redacted]"
+        assert row["reasoning_effort"] == "high"
+        assert row["use_responses_api"] is False
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)

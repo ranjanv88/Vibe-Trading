@@ -12,122 +12,48 @@ v2 enhancements over v1:
 
 Signal interface: OptionsSignalEngine.generate(data_map) returns a list of trade instructions.
 Artifacts: equity.csv, metrics.csv, trades.csv, greeks.csv.
+
+Black-Scholes price and Greeks come from ``src.quantlib.options``. What stays
+here is the engine's own volatility surface -- historical vol, the smile, and
+the per-leg vol every pricing site must agree on.
 """
 
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
-
-# --- Black-Scholes pricing ---
-
-
-def bs_price(S: float, K: float, T: float, r: float, sigma: float,
-             option_type: str = "call") -> float:
-    """Black-Scholes European option pricing.
-
-    Args:
-        S: Underlying spot price.
-        K: Strike price.
-        T: Time to expiry in years.
-        r: Risk-free rate (annualised).
-        sigma: Annualised volatility.
-        option_type: Option type, "call" or "put".
-
-    Returns:
-        Theoretical option price.
-
-    Example:
-        >>> round(bs_price(100, 100, 1.0, 0.05, 0.2, "call"), 2)
-        10.45
-    """
-    # Non-positive S/K makes log(S/K) undefined; reuse the intrinsic fallback
-    # (iv_smile_adjustment already soft-guards non-positive S/K).
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        if option_type == "call":
-            return max(S - K, 0.0)
-        return max(K - S, 0.0)
-
-    d1 = (np.log(S / K) + (r + sigma ** 2 / 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-
-    if option_type == "call":
-        return float(S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2))
-    return float(K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1))
-
-
-# --- Greeks ---
-
-
-def bs_greeks(S: float, K: float, T: float, r: float, sigma: float,
-              option_type: str = "call") -> Dict[str, float]:
-    """Calculate Black-Scholes Greeks.
-
-    Args:
-        S: Underlying spot price.
-        K: Strike price.
-        T: Time to expiry in years.
-        r: Risk-free rate (annualised).
-        sigma: Annualised volatility.
-        option_type: Option type, "call" or "put".
-
-    Returns:
-        Dict containing delta, gamma, theta, vega.
-    """
-    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
-        intrinsic_call = 1.0 if S > K else 0.0
-        delta = intrinsic_call if option_type == "call" else intrinsic_call - 1.0
-        return {"delta": delta, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
-
-    sqrt_T = np.sqrt(T)
-    d1 = (np.log(S / K) + (r + sigma ** 2 / 2) * T) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
-    nd1_pdf = float(norm.pdf(d1))
-
-    # Delta
-    if option_type == "call":
-        delta = float(norm.cdf(d1))
-    else:
-        delta = float(norm.cdf(d1) - 1.0)
-
-    # Gamma (same for call and put)
-    gamma = float(nd1_pdf / (S * sigma * sqrt_T))
-
-    # Theta (daily)
-    theta_common = -(S * nd1_pdf * sigma) / (2 * sqrt_T)
-    if option_type == "call":
-        theta = theta_common - r * K * np.exp(-r * T) * norm.cdf(d2)
-    else:
-        theta = theta_common + r * K * np.exp(-r * T) * norm.cdf(-d2)
-    theta = float(theta / 365.0)  # convert to daily
-
-    # Vega (per 1% change in volatility)
-    vega = float(S * nd1_pdf * sqrt_T / 100.0)
-
-    return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega}
+from backtest.engines.base import evaluation_start_index
+from backtest.metrics import effective_bars_per_year
+from src.quantlib.options import bs_greeks, bs_price, normalise_option_type
 
 
 # --- Historical volatility ---
 
 
-def historical_volatility(close: pd.Series, window: int = 30) -> pd.Series:
+def historical_volatility(
+    close: pd.Series, window: int = 30, default_iv: float = 0.3
+) -> pd.Series:
     """Calculate annualised historical volatility from a close price series.
 
     Args:
         close: Close price Series.
         window: Rolling window in days.
+        default_iv: Volatility used for any bar without a full rolling window
+            (the leading warm-up and NaN gaps). Backfilling the first computed
+            window here would price bars before it with information from the
+            window's own end (#1293).
 
     Returns:
         Annualised historical volatility Series.
     """
     log_ret = np.log(close / close.shift(1))
     hv = log_ret.rolling(window=window).std() * np.sqrt(252)
-    return hv.fillna(hv.dropna().iloc[0] if len(hv.dropna()) > 0 else 0.3)
+    return hv.fillna(default_iv)
 
 
 # --- IV Smile model (v2) ---
@@ -156,6 +82,31 @@ def iv_smile_adjustment(S: float, K: float, base_iv: float,
     return max(adj, 0.01)
 
 
+def leg_iv(S: float, K: float, base_iv: float, skew: float, curvature: float) -> float:
+    """Return the implied vol a single leg is priced at.
+
+    Every site that prices a leg must go through this — opening, marking to
+    market, Greeks, and the American continuation value. Opening a leg on the
+    smile and marking it at flat at-the-money vol books a fictitious profit the
+    instant the position exists: on a 30-day 10%-OTM call at ``skew=-0.15`` the
+    gap is +16.7% of premium, and +93.0% at 20% OTM, which then contaminates
+    Sharpe, Calmar and drawdown.
+
+    Args:
+        S: Spot price.
+        K: Strike price.
+        base_iv: At-the-money implied volatility.
+        skew: Slope of the smile; ``0`` with ``curvature`` disables the smile.
+        curvature: Curvature of the smile.
+
+    Returns:
+        The leg's implied volatility.
+    """
+    if skew == 0 and curvature == 0:
+        return base_iv
+    return iv_smile_adjustment(S, K, base_iv, skew, curvature)
+
+
 # --- Option positions ---
 
 
@@ -163,19 +114,24 @@ class OptionPosition:
     """A single option leg position.
 
     Attributes:
-        option_type: "call" or "put".
+        option_type: "call" or "put", folded to lower case on construction so
+            that settlement here and pricing in ``src.quantlib.options`` cannot
+            disagree about a leg typed ``"Call"``.
         strike: Strike price.
         expiry: Expiry date.
         qty: Quantity (positive = long, negative = short).
         entry_price: Theoretical option price at entry.
         entry_date: Entry date string.
         underlying_code: Underlying instrument code.
+
+    Raises:
+        ValueError: If ``option_type`` is neither call nor put.
     """
 
     def __init__(self, option_type: str, strike: float, expiry: str,
                  qty: int, entry_price: float, entry_date: str,
                  underlying_code: str):
-        self.option_type = option_type
+        self.option_type = normalise_option_type(option_type)
         self.strike = strike
         self.expiry = pd.Timestamp(expiry)
         self.qty = qty
@@ -228,7 +184,7 @@ def run_options_backtest(
     loader: Any,
     engine: Any,
     run_dir: Path,
-    bars_per_year: int = 252,
+    bars_per_year: int | None = 252,
 ) -> Dict[str, Any]:
     """Options backtest entry point.
 
@@ -264,6 +220,15 @@ def run_options_backtest(
     exercise_style = options_cfg.get("exercise_style", "european")  # v2: "european" or "american"
     iv_skew = options_cfg.get("iv_skew", 0.0)         # v2: smile skew param (0 = flat)
     iv_curvature = options_cfg.get("iv_curvature", 0.0)  # v2: smile curvature
+    same_day_fill = options_cfg.get("same_day_fill", False)
+    default_iv = options_cfg.get("default_iv", 0.3)
+    if not math.isfinite(default_iv) or default_iv <= 0.0:
+        raise ValueError("options_config.default_iv must be a finite, positive float")
+    # Short legs hold margin and every open checks buying power; opt out for
+    # research runs that intentionally model unconstrained leverage.
+    margin_enabled = bool(options_cfg.get("margin_enabled", True))
+    margin_rate = float(options_cfg.get("margin_rate", 0.20))
+    margin_floor_rate = float(options_cfg.get("margin_floor_rate", 0.10))
 
     # Load underlying data
     data_map = loader.fetch(codes, start_date, end_date)
@@ -274,7 +239,7 @@ def run_options_backtest(
     # Compute implied volatility (approximated by historical volatility)
     iv_map: Dict[str, pd.Series] = {}
     for code, df in data_map.items():
-        iv_map[code] = historical_volatility(df["close"])
+        iv_map[code] = historical_volatility(df["close"], default_iv=default_iv)
 
     # Generate trade signals
     signals = engine.generate(data_map)
@@ -283,7 +248,15 @@ def run_options_backtest(
     all_dates = set()
     for df in data_map.values():
         all_dates.update(df.index)
-    dates = sorted(all_dates)
+    full_dates = sorted(all_dates)
+
+    # Warm-up bars primed the signal engine above; from here they do not exist,
+    # so nothing they contain reaches a fill, the equity curve or a metric. The
+    # full range stays available for the previous-bar lookup, so a signal dated
+    # the last warm-up bar fills on the first evaluated bar -- the equity
+    # engines' convention (the warm-up cut is applied after the signal shift).
+    warmup_end = evaluation_start_index(config, pd.DatetimeIndex(full_dates))
+    dates = full_dates[warmup_end:]
 
     # Index signals by date
     signal_by_date: Dict[str, List[Dict[str, Any]]] = {}
@@ -298,9 +271,52 @@ def run_options_backtest(
     greeks_records: List[Dict[str, Any]] = []
     equity_records: List[Dict[str, Any]] = []
 
-    for current_date in dates:
+    def short_margin_per_unit(option_type: str, spot: float, strike: float,
+                              premium: float) -> float:
+        """CBOE-style short margin per unit: premium plus the larger of
+        ``margin_rate`` of spot minus the out-of-the-money amount and a
+        ``margin_floor_rate`` floor (spot for calls, strike for puts)."""
+        if option_type == "call":
+            otm = max(0.0, strike - spot)
+            return premium + max(margin_rate * spot - otm, margin_floor_rate * spot)
+        otm = max(0.0, spot - strike)
+        return premium + max(margin_rate * spot - otm, margin_floor_rate * strike)
+
+    def current_short_margin(ts: pd.Timestamp) -> float:
+        """Margin the open short legs would post right now, re-marked daily."""
+        total = 0.0
+        for pos in positions:
+            if pos.qty >= 0:
+                continue
+            spot = spot_prices.get(pos.underlying_code, 0.0)
+            iv_val = ivs.get(pos.underlying_code, 0.3)
+            mark_iv = leg_iv(spot, pos.strike, iv_val, iv_skew, iv_curvature)
+            mark = bs_price(spot, pos.strike, pos.time_to_expiry(ts),
+                            risk_free_rate, mark_iv, pos.option_type)
+            total += short_margin_per_unit(
+                pos.option_type, spot, pos.strike, mark
+            ) * abs(pos.qty) * contract_multiplier
+        return total
+
+    for idx, current_date in enumerate(dates):
+        full_idx = idx + warmup_end
         ts = pd.Timestamp(current_date)
         date_str = str(ts.date()) if hasattr(ts, "date") else str(ts)
+        # Signals are dated the bar they were computed on and priced/filled on
+        # the next bar's close, executed end-of-day on the bar after the
+        # decision (#1293). Equity engines fill the next bar's open; the
+        # options engine deliberately fills the next close because signals are
+        # computed on end-of-day data. A signal dated the last warm-up bar
+        # fills on the first evaluated bar, matching the equity convention;
+        # only signals dated before the very first loaded bar can never fill.
+        # Set options_config.same_day_fill to price a signal on its own date.
+        if same_day_fill:
+            signal_date = date_str
+        elif full_idx > 0:
+            prev = pd.Timestamp(full_dates[full_idx - 1])
+            signal_date = str(prev.date()) if hasattr(prev, "date") else str(prev)
+        else:
+            signal_date = None
 
         # 1. Get underlying price and IV for the current day
         spot_prices: Dict[str, float] = {}
@@ -308,14 +324,22 @@ def run_options_backtest(
         for code, df in data_map.items():
             if ts in df.index:
                 spot_prices[code] = float(df.at[ts, "close"])
-                ivs[code] = float(iv_map[code].at[ts]) if ts in iv_map[code].index else 0.3
+                ivs[code] = (
+                    float(iv_map[code].at[ts])
+                    if ts in iv_map[code].index
+                    else default_iv
+                )
             else:
                 # Use the last available price
                 before = df.index[df.index <= ts]
                 if len(before) > 0:
                     last = before[-1]
                     spot_prices[code] = float(df.at[last, "close"])
-                    ivs[code] = float(iv_map[code].at[last]) if last in iv_map[code].index else 0.3
+                    ivs[code] = (
+                        float(iv_map[code].at[last])
+                        if last in iv_map[code].index
+                        else default_iv
+                    )
 
         # 2a. American early exercise (v2): exercise if intrinsic > continuation
         if exercise_style == "american":
@@ -323,12 +347,15 @@ def run_options_backtest(
                 if pos.is_expired(ts):
                     continue  # handled below
                 spot = spot_prices.get(pos.underlying_code, 0.0)
-                iv_val_ex = ivs.get(pos.underlying_code, 0.3)
+                iv_val_ex = ivs.get(pos.underlying_code, default_iv)
                 T_ex = pos.time_to_expiry(ts)
                 if T_ex <= 0:
                     continue
                 intrinsic = pos.intrinsic_value(spot)
-                continuation = bs_price(spot, pos.strike, T_ex, risk_free_rate, iv_val_ex, pos.option_type)
+                # The continuation value must use the same vol the leg is
+                # marked at, or early exercise triggers off a mispriced hold.
+                iv_ex = leg_iv(spot, pos.strike, iv_val_ex, iv_skew, iv_curvature)
+                continuation = bs_price(spot, pos.strike, T_ex, risk_free_rate, iv_ex, pos.option_type)
                 if intrinsic > 0 and intrinsic > continuation * 1.02:
                     # Early exercise is optimal
                     settlement = intrinsic * pos.qty * contract_multiplier
@@ -348,44 +375,21 @@ def run_options_backtest(
                     })
                     positions.remove(pos)
 
-        # 2b. Handle expiry
-        expired = [p for p in positions if p.is_expired(ts)]
-        for pos in expired:
-            spot = spot_prices.get(pos.underlying_code, 0.0)
-            intrinsic = pos.intrinsic_value(spot)
-
-            # Expiry: recover intrinsic value (entry_price already deducted at open)
-            settlement = intrinsic * pos.qty * contract_multiplier
-            cash += settlement
-            pnl = (intrinsic - pos.entry_price) * pos.qty * contract_multiplier
-
-            side = "exercise" if intrinsic > 0 else "expire"
-            trade_records.append({
-                "timestamp": date_str,
-                "code": pos.underlying_code,
-                "option_type": pos.option_type,
-                "strike": pos.strike,
-                "expiry": str(pos.expiry.date()),
-                "side": side,
-                "price": round(intrinsic, 4),
-                "qty": pos.qty,
-                "pnl": round(pnl, 4),
-                "entry_date": pos.entry_date,
-            })
-            positions.remove(pos)
-
-        # 3. Execute today's signals
-        day_signals = signal_by_date.get(date_str, [])
+        # 3. Execute the prior bar's signals at today's prices
+        day_signals = signal_by_date.get(signal_date, []) if signal_date else []
         for sig in day_signals:
             action = sig.get("action", "")
             legs = sig.get("legs", [])
             underlying = sig.get("underlying", codes[0] if codes else "")
 
             spot = spot_prices.get(underlying, 0.0)
-            iv_val = ivs.get(underlying, 0.3)
+            iv_val = ivs.get(underlying, default_iv)
 
             for leg in legs:
-                leg_type = leg.get("type", "call")
+                # Fold before it is priced, matched and recorded: config comes
+                # from the user, and a raw "Call" would price as a call and
+                # settle as a put.
+                leg_type = normalise_option_type(leg.get("type", "call"))
                 strike = leg.get("strike", spot)
                 expiry = leg.get("expiry", "")
                 qty = leg.get("qty", 1)
@@ -393,17 +397,42 @@ def run_options_backtest(
                 expiry_ts = pd.Timestamp(expiry)
                 T = max((expiry_ts - ts).days / 365.0, 0.001)
 
-                # Apply IV smile adjustment (v2) if configured
-                adj_iv = iv_val
-                if iv_skew != 0 or iv_curvature != 0:
-                    adj_iv = iv_smile_adjustment(spot, strike, iv_val, iv_skew, iv_curvature)
-
-                # Black-Scholes price (with smile-adjusted IV if enabled)
+                adj_iv = leg_iv(spot, strike, iv_val, iv_skew, iv_curvature)
                 opt_price = bs_price(spot, strike, T, risk_free_rate, adj_iv, leg_type)
 
                 if action == "open":
                     # Open: long pays premium, short receives premium
                     abs_cost = opt_price * abs(qty) * contract_multiplier
+                    if margin_enabled:
+                        # Buying power: cash already posted as short margin is
+                        # not spendable. Longs need the premium; shorts need
+                        # the new leg's margin net of the premium it brings in.
+                        posted = current_short_margin(ts)
+                        if qty > 0:
+                            affordable = cash - posted >= abs_cost * (1 + commission)
+                        else:
+                            leg_margin = short_margin_per_unit(
+                                leg_type, spot, strike, opt_price
+                            ) * abs(qty) * contract_multiplier
+                            affordable = (
+                                cash + abs_cost * (1 - commission)
+                                >= posted + leg_margin
+                            )
+                        if not affordable:
+                            trade_records.append({
+                                "timestamp": date_str,
+                                "code": underlying,
+                                "option_type": leg_type,
+                                "strike": strike,
+                                "expiry": expiry,
+                                "side": "reject",
+                                "price": round(opt_price, 4),
+                                "qty": qty,
+                                "pnl": 0.0,
+                                "entry_date": date_str,
+                                "reason": "insufficient buying power",
+                            })
+                            continue
                     if qty > 0:
                         cash -= abs_cost * (1 + commission)
                     else:
@@ -487,32 +516,65 @@ def run_options_backtest(
                                 underlying_code=matched.underlying_code,
                             )
 
-        # 4. Compute portfolio mark-to-market value and Greeks
+        # 4. Handle expiry. Runs after signal execution so a fill dated the
+        # bar before expiry settles on the expiry bar itself: an option is
+        # never carried past its expiry and never settled a bar late (#1293).
+        expired = [p for p in positions if p.is_expired(ts)]
+        for pos in expired:
+            spot = spot_prices.get(pos.underlying_code, 0.0)
+            intrinsic = pos.intrinsic_value(spot)
+
+            # Expiry: recover intrinsic value (entry_price already deducted at open)
+            settlement = intrinsic * pos.qty * contract_multiplier
+            cash += settlement
+            pnl = (intrinsic - pos.entry_price) * pos.qty * contract_multiplier
+
+            side = "exercise" if intrinsic > 0 else "expire"
+            trade_records.append({
+                "timestamp": date_str,
+                "code": pos.underlying_code,
+                "option_type": pos.option_type,
+                "strike": pos.strike,
+                "expiry": str(pos.expiry.date()),
+                "side": side,
+                "price": round(intrinsic, 4),
+                "qty": pos.qty,
+                "pnl": round(pnl, 4),
+                "entry_date": pos.entry_date,
+            })
+            positions.remove(pos)
+
+        # 5. Compute portfolio mark-to-market value and Greeks
         portfolio_value = cash
         total_delta = 0.0
         total_gamma = 0.0
         total_theta = 0.0
         total_vega = 0.0
+        total_rho = 0.0
 
         for pos in positions:
             spot = spot_prices.get(pos.underlying_code, 0.0)
-            iv_val = ivs.get(pos.underlying_code, 0.3)
+            iv_val = ivs.get(pos.underlying_code, default_iv)
             T = pos.time_to_expiry(ts)
 
-            mark_price = bs_price(spot, pos.strike, T, risk_free_rate, iv_val, pos.option_type)
+            mark_iv = leg_iv(spot, pos.strike, iv_val, iv_skew, iv_curvature)
+
+            mark_price = bs_price(spot, pos.strike, T, risk_free_rate, mark_iv, pos.option_type)
             portfolio_value += mark_price * pos.qty * contract_multiplier
 
-            greeks = bs_greeks(spot, pos.strike, T, risk_free_rate, iv_val, pos.option_type)
+            greeks = bs_greeks(spot, pos.strike, T, risk_free_rate, mark_iv, pos.option_type)
             total_delta += greeks["delta"] * pos.qty * contract_multiplier
             total_gamma += greeks["gamma"] * pos.qty * contract_multiplier
             total_theta += greeks["theta"] * pos.qty * contract_multiplier
             total_vega += greeks["vega"] * pos.qty * contract_multiplier
+            total_rho += greeks["rho"] * pos.qty * contract_multiplier
 
         equity_records.append({
             "timestamp": date_str,
             "equity": round(portfolio_value, 4),
             "cash": round(cash, 4),
             "positions_value": round(portfolio_value - cash, 4),
+            "margin_hold": round(current_short_margin(ts), 4) if margin_enabled else 0.0,
         })
 
         greeks_records.append({
@@ -521,6 +583,7 @@ def run_options_backtest(
             "gamma": round(total_gamma, 6),
             "theta": round(total_theta, 6),
             "vega": round(total_vega, 6),
+            "rho": round(total_rho, 6),
             "num_positions": len(positions),
         })
 
@@ -532,6 +595,13 @@ def run_options_backtest(
 
     equity_series = equity_df.set_index("timestamp")["equity"]
     metrics = _calc_options_metrics(equity_series, initial_cash, trade_records, bars_per_year)
+    if margin_enabled:
+        metrics["options_margin_hold"] = round(
+            float(equity_df["margin_hold"].iloc[-1]), 4
+        )
+        metrics["options_rejected_opens"] = sum(
+            1 for record in trade_records if record.get("side") == "reject"
+        )
 
     # Write artifacts
     out = run_dir / "artifacts"
@@ -543,7 +613,7 @@ def run_options_backtest(
     equity_df.to_csv(out / "equity.csv", index=False)
 
     trade_cols = ["timestamp", "code", "option_type", "strike", "expiry",
-                  "side", "price", "qty", "pnl", "entry_date"]
+                  "side", "price", "qty", "pnl", "entry_date", "reason"]
     pd.DataFrame(trade_records or [], columns=trade_cols).to_csv(
         out / "trades.csv", index=False)
 
@@ -579,7 +649,9 @@ def _find_matching_position(
     Args:
         positions: Current open positions.
         underlying: Underlying instrument code.
-        option_type: Option type.
+        option_type: Option type, already folded by ``normalise_option_type``;
+            ``OptionPosition`` folds its own, so both sides compare in lower
+            case.
         strike: Strike price.
         expiry: Expiry date string.
 
@@ -600,7 +672,7 @@ def _calc_options_metrics(
     equity: pd.Series,
     initial_cash: float,
     trades: List[Dict[str, Any]],
-    bars_per_year: int = 252,
+    bars_per_year: int | None = 252,
 ) -> Dict[str, Any]:
     """Calculate options backtest metrics.
 
@@ -617,6 +689,13 @@ def _calc_options_metrics(
     n = len(equity)
     equity_vals = pd.to_numeric(equity, errors="coerce").astype(float)
     path_is_finite = bool(n and np.isfinite(equity_vals.to_numpy()).all())
+
+    # Cross-market convention (runner.py passes bars_per_year=None): resolve
+    # it through the shared span-derived factor. Without this, every None
+    # comparison below (<= 0 / > 0) raises TypeError instead of returning
+    # metrics.
+    if bars_per_year is None:
+        bars_per_year = effective_bars_per_year(equity_vals.index)
 
     final_raw: float | None = None
     final_value: float | None = None
@@ -660,7 +739,7 @@ def _calc_options_metrics(
         growth = final_raw / float(initial_cash)
         # Explosive paths (e.g. 1m bars) can OverflowError before isfinite.
         try:
-            candidate = float(growth ** (bars_per_year / (n - 1)) - 1)
+            candidate = float(growth ** (bars_per_year / n) - 1)
         except OverflowError:
             candidate = float("inf")
         if np.isfinite(candidate):
@@ -770,7 +849,9 @@ def _calc_options_metrics(
         "sharpe": round(sharpe, 4) if sharpe is not None else None,
         "calmar": round(calmar, 4) if calmar is not None else None,
         "sortino": round(sortino, 4) if sortino is not None else None,
-        "trade_count": len(trades),
+        # A rejected open never reached the book; it is reported separately as
+        # options_rejected_opens and must not inflate the trade count.
+        "trade_count": sum(1 for t in trades if t.get("side") != "reject"),
         "win_rate": round(win_rate, 4),
         "profit_loss_ratio": round(pl_ratio, 4),
         "warnings": warnings,

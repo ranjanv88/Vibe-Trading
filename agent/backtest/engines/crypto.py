@@ -17,9 +17,12 @@ import pandas as pd
 
 from backtest.engines.base import BaseEngine
 from backtest.engines._market_hooks import (
+    _interval_span_hours,
+    _liquidation_mark,
     calc_crypto_funding_fee,
     check_crypto_liquidation,
 )
+from backtest.models import Position
 from backtest.perpetual_evidence import (
     SCHEMA_VERSION,
     build_perpetual_summary,
@@ -77,14 +80,16 @@ class CryptoEngine(BaseEngine):
         self._schedule_cache: dict[tuple[str, str], MaintenanceSchedule] = {}
         self._risk_frames: dict[str, MarketRiskFrame] = {}
         self._blocked_symbols: set[str] = set()
+        self._rebalance_risk_checked = False
         self._funding_applied: set = set()   # (symbol, date, hour) — per-slot dedup
         self._funding_daily_done: set = set()  # (symbol, date) — daily fallback dedup
 
     def _validate_strict_resolution(self, config: dict[str, Any]) -> None:
         if not self.perpetual_strict or self.default_leverage < 100:
             return
-        interval = str(config.get("interval", "1D")).strip().lower()
-        if interval not in {"1m", "5m", "15m", "30m", "1h"}:
+        # Compared case-exact: lowercasing would read the monthly "1M" as "1m".
+        interval = str(config.get("interval", "1D")).strip()
+        if interval not in {"1m", "5m", "15m", "30m", "1H", "1h"}:
             raise ValueError(
                 "strict 100x requires a supported interval <= 1H "
                 "(1m/5m/15m/30m/1H); 1H is only a resolution boundary, "
@@ -97,7 +102,7 @@ class CryptoEngine(BaseEngine):
         loader: Any,
         signal_engine: Any,
         run_dir: Path,
-        bars_per_year: int = 252,
+        bars_per_year: int | None = 252,
     ) -> dict[str, Any]:
         self._validate_strict_resolution(config)
         self._run_interval = str(config.get("interval", "1D"))
@@ -122,6 +127,8 @@ class CryptoEngine(BaseEngine):
 
     def apply_slippage(self, price: float, direction: int) -> float:
         """Slippage: unfavourable direction."""
+        if self.perpetual_strict and self.position_adjustment == "rebalance":
+            return price
         return price * (1 + direction * self.slippage_rate)
 
     def execution_open(self, bar: pd.Series) -> float:
@@ -351,6 +358,7 @@ class CryptoEngine(BaseEngine):
         if not self.perpetual_strict:
             return super().before_rebalance_bar(timestamp, data_map, codes)
         self._blocked_symbols.clear()
+        self._rebalance_risk_checked = False
         self._build_strict_frames(timestamp, data_map, codes)
         self._apply_data_funding()
         return self._evaluate_and_liquidate(timestamp, "mark_open")
@@ -363,9 +371,82 @@ class CryptoEngine(BaseEngine):
     ) -> bool:
         if not self.perpetual_strict:
             return super().after_rebalance_bar(timestamp, data_map, codes)
+        if self.terminal_status == "account_liquidation":
+            return True
+        if self.position_adjustment == "rebalance" and self._rebalance_risk_checked:
+            return False
         return self._evaluate_and_liquidate(timestamp, "adverse")
 
-    def _execute_bars(self, dates, data_map, close_df, target_pos, codes) -> None:
+    def _risk_after_atomic_mutation(self, timestamp: pd.Timestamp) -> None:
+        if not self.perpetual_strict or self.position_adjustment != "rebalance":
+            return
+        self._rebalance_risk_checked = True
+        if self.terminal_status != "account_liquidation":
+            self._evaluate_and_liquidate(timestamp, "adverse")
+
+    def after_position_adjustment(
+        self,
+        *,
+        action: str,
+        timestamp: pd.Timestamp,
+        before: Position,
+        after: Position,
+        execution_price: float,
+        trading_fee: float,
+        realized_pnl: float = 0.0,
+        released_margin: float = 0.0,
+    ) -> None:
+        super().after_position_adjustment(
+            action=action,
+            timestamp=timestamp,
+            before=before,
+            after=after,
+            execution_price=execution_price,
+            trading_fee=trading_fee,
+            realized_pnl=realized_pnl,
+            released_margin=released_margin,
+        )
+        if not self.perpetual_strict:
+            return
+
+        normalized_action = (
+            "reduce" if action == "partial_reduction" else action
+        )
+        if normalized_action not in {"increase", "reduce"}:
+            raise ValueError(f"unexpected position adjustment action: {action}")
+
+        size_delta = after.size - before.size
+        if self.margin_mode == "isolated":
+            if normalized_action == "increase":
+                self._isolated_margins[after.symbol] += self._calc_margin(
+                    after.symbol,
+                    size_delta,
+                    execution_price,
+                    after.leverage,
+                )
+            else:
+                self._isolated_margins[after.symbol] *= after.size / before.size
+
+        signed_delta = after.direction * size_delta
+        self._record_event(
+            timestamp,
+            "market_fill",
+            action=normalized_action,
+            symbol=after.symbol,
+            side="buy" if signed_delta > 0 else "sell",
+            signed_quantity=signed_delta,
+            before_size=before.size,
+            after_size=after.size,
+            execution_price=execution_price,
+            execution_price_source="execution_open",
+            trading_fee=trading_fee,
+            realized_pnl=realized_pnl,
+            released_margin=released_margin,
+            reason="target_rebalance",
+        )
+        self._risk_after_atomic_mutation(timestamp)
+
+    def _execute_bars(self, dates, data_map, close_df, target_pos, codes, close_val_df=None) -> None:
         if self.perpetual_strict:
             try:
                 close_df = pd.DataFrame(
@@ -373,11 +454,39 @@ class CryptoEngine(BaseEngine):
                 )
             except KeyError as exc:
                 raise ValueError(f"missing strict mark-close data: {exc}") from exc
-        super()._execute_bars(dates, data_map, close_df, target_pos, codes)
+            close_val_df = close_df.ffill()
+        super()._execute_bars(dates, data_map, close_df, target_pos, codes, close_val_df=close_val_df)
         if self.perpetual_strict and self.terminal_status == "active":
             self.terminal_status = "completed"
 
+    def _reject_unfunded_atomic_order(
+        self, order, timestamp: pd.Timestamp, action: str
+    ) -> bool:
+        if (
+            not self.perpetual_strict
+            or self.position_adjustment != "rebalance"
+            or order.cost <= self.capital + 1e-7
+        ):
+            return False
+        self._record_event(
+            timestamp,
+            "order_rejected",
+            action=action,
+            symbol=order.symbol,
+            reason="insufficient_capital_after_liquidation",
+            required_capital=order.cost,
+            available_capital=self.capital,
+        )
+        return True
+
     def _execute_open_order(self, order, timestamp: pd.Timestamp) -> None:
+        if self.perpetual_strict and self.position_adjustment == "rebalance" and (
+            self.terminal_status == "account_liquidation"
+            or order.symbol in self._blocked_symbols
+        ):
+            return
+        if self._reject_unfunded_atomic_order(order, timestamp, "open"):
+            return
         super()._execute_open_order(order, timestamp)
         if self.perpetual_strict:
             self._record_event(
@@ -394,6 +503,28 @@ class CryptoEngine(BaseEngine):
             )
         if self.perpetual_strict and self.margin_mode == "isolated":
             self._isolated_margins[order.symbol] = order.margin
+        self._risk_after_atomic_mutation(timestamp)
+
+    def _execute_position_increase(self, order, timestamp: pd.Timestamp) -> None:
+        if self.perpetual_strict and self.position_adjustment == "rebalance" and (
+            self.terminal_status == "account_liquidation"
+            or order.symbol in self._blocked_symbols
+            or order.symbol not in self.positions
+        ):
+            return
+        if self._reject_unfunded_atomic_order(order, timestamp, "increase"):
+            return
+        super()._execute_position_increase(order, timestamp)
+
+    def _execute_partial_reduction(self, order, timestamp: pd.Timestamp) -> None:
+        symbol = order.before.symbol
+        if self.perpetual_strict and self.position_adjustment == "rebalance" and (
+            self.terminal_status == "account_liquidation"
+            or symbol in self._blocked_symbols
+            or symbol not in self.positions
+        ):
+            return
+        super()._execute_partial_reduction(order, timestamp)
 
     def _close_position(
         self,
@@ -422,6 +553,8 @@ class CryptoEngine(BaseEngine):
                 reason=reason,
             )
         self._isolated_margins.pop(symbol, None)
+        if position is not None and reason == "signal":
+            self._risk_after_atomic_mutation(exit_time)
 
     def _write_artifacts(
         self,
@@ -474,12 +607,14 @@ class CryptoEngine(BaseEngine):
         fee = calc_crypto_funding_fee(
             symbol, bar, timestamp, self.positions,
             self.funding_rate, self._funding_applied, self._funding_daily_done,
+            _interval_span_hours(self._run_interval),
         )
         self.capital -= fee
 
         if check_crypto_liquidation(symbol, bar, self.positions):
             pos = self.positions.get(symbol)
             if pos is not None:
-                mark_price = float(bar.get("close", pos.entry_price))
-                liq_price = self.apply_slippage(mark_price, -pos.direction)
+                # Fill at the same adverse mark the hook used for the check so
+                # a wick trigger never exits at a better price than the venue.
+                liq_price = self.apply_slippage(_liquidation_mark(bar, pos), -pos.direction)
                 self._close_position(symbol, liq_price, timestamp, "liquidation")

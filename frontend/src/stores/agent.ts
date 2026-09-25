@@ -45,6 +45,7 @@ export function deriveActivityVerb(tool: string | undefined): ActivityVerb {
 
 export interface AgentMessageMeta {
   attachment?: { filename: string };
+  attachments?: Array<{ filename: string }>;
   swarmMode?: boolean;
   goalMode?: boolean;
   requestText?: string;

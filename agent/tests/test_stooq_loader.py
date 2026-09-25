@@ -7,6 +7,7 @@ we monkeypatch that name on the ``stooq_loader`` module.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -174,3 +175,107 @@ class TestParseCsv:
     def test_all_rows_dropped_returns_none(self):
         body = "Date,Open,High,Low,Close,Volume\n2024-01-02,,,,,\n"
         assert stooq_loader._parse_csv(body) is None
+
+
+# ---------------------------------------------------------------------------
+# Anti-bot challenge detection (#1315)
+# ---------------------------------------------------------------------------
+
+
+class TestChallengePageDetection:
+    """The PoW challenge page must read as source-unavailable, not as no data."""
+
+    _CHALLENGE_HTML = (
+        "<html><head><title>One moment, please...</title></head>"
+        "<body>Verifying your browser... proof of work challenge</body></html>"
+    )
+
+    def test_challenge_page_yields_no_data_and_warns_once(self, monkeypatch, caplog):
+        monkeypatch.setattr(stooq_loader, "_challenge_warned", False)
+        monkeypatch.setattr(
+            stooq_loader,
+            "throttled_get",
+            lambda url, **kw: _FakeResponse(text=self._CHALLENGE_HTML),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="backtest.loaders.stooq_loader"):
+            out = stooq_loader.DataLoader().fetch(
+                ["AAPL.US", "MSFT.US"], "2024-01-01", "2024-01-31",
+            )
+
+        assert out == {}
+        warnings = [r.message for r in caplog.records if "anti-bot challenge" in r.message]
+        assert len(warnings) == 1  # two symbols, one warning
+
+    def test_challenge_page_does_not_reach_csv_parser(self, monkeypatch):
+        monkeypatch.setattr(stooq_loader, "_challenge_warned", True)  # latch already set
+        monkeypatch.setattr(
+            stooq_loader,
+            "throttled_get",
+            lambda url, **kw: _FakeResponse(text=self._CHALLENGE_HTML),
+        )
+        # A CSV parse of HTML would return None anyway; the point here is the
+        # detector fires before parsing and the source counts as unavailable.
+        assert stooq_loader._looks_like_challenge_page(self._CHALLENGE_HTML)
+        assert not stooq_loader._looks_like_challenge_page(_CSV)
+        assert not stooq_loader._looks_like_challenge_page("N/D\n")
+
+
+class TestChallengeWarningNamesRealOverride:
+    """The remediation advice must be executable as written (#1315 follow-up).
+
+    The warning tells the operator how to route around a challenge-blocked
+    stooq. Both halves of that advice are load-bearing: the env var has to be
+    the one ``registry`` actually reads, and the suggested edit has to survive
+    ``is_valid_source_order``. Pin them to the registry so the message cannot
+    drift away from the code again.
+    """
+
+    _CHALLENGE_HTML = (
+        "<html><head><title>One moment, please...</title></head>"
+        "<body>Verifying your browser... proof of work challenge</body></html>"
+    )
+
+    def _warning(self, monkeypatch, caplog) -> str:
+        monkeypatch.setattr(stooq_loader, "_challenge_warned", False)
+        monkeypatch.setattr(
+            stooq_loader,
+            "throttled_get",
+            lambda url, **kw: _FakeResponse(text=self._CHALLENGE_HTML),
+        )
+        with caplog.at_level(logging.WARNING, logger="backtest.loaders.stooq_loader"):
+            stooq_loader.DataLoader().fetch(["AAPL.US"], "2024-01-01", "2024-01-31")
+        return next(r.message for r in caplog.records if "anti-bot challenge" in r.message)
+
+    def test_warning_names_the_env_var_registry_reads(self, monkeypatch, caplog):
+        """A substring check would pass on ``VIBE_TRADING_MARKET_DATA_ORDER_*``.
+
+        That name is not read anywhere, so following the advice is a silent
+        no-op. Compare whole tokens: any env-var-shaped word mentioning the
+        override must *be* the prefix, not merely contain it.
+        """
+        import re
+
+        from backtest.loaders.registry import source_order_env_var
+
+        message = self._warning(monkeypatch, caplog)
+        prefix = source_order_env_var("us_equity").rsplit("US_EQUITY", 1)[0]
+
+        named = [t for t in re.findall(r"[A-Z][A-Z0-9_]*", message) if "MARKET_DATA_ORDER" in t]
+        assert named, f"warning names no override variable at all: {message!r}"
+        for token in named:
+            assert token.startswith(prefix), (
+                f"{token!r} is not read by the config layer; the real prefix is {prefix!r}"
+            )
+
+    def test_warning_does_not_advise_dropping_a_source(self, monkeypatch, caplog):
+        """``is_valid_source_order`` rejects a chain with a source removed."""
+        from backtest.loaders.registry import get_default_source_order, is_valid_source_order
+
+        without_stooq = [s for s in get_default_source_order("us_equity") if s != "stooq"]
+        assert not is_valid_source_order("us_equity", without_stooq)
+
+        message = self._warning(monkeypatch, caplog)
+        assert "drop stooq" not in message.lower(), (
+            f"advice is rejected by is_valid_source_order: {message!r}"
+        )

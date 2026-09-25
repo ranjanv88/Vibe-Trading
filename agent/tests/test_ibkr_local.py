@@ -345,3 +345,197 @@ def test_pool_release_idempotent_no_connection(fake_ib_async) -> None:
     local._pool._local.ib = None
     # Must not raise.
     local._pool.release()
+
+
+# -- market-data tier regression tests -----------------------------------
+# TWS defaults to live data (tier 1), which needs a paid per-exchange
+# subscription. Without one IBKR answers error 354, no tick ever arrives, and
+# get_quote used to return status "ok" with null prices — a silent failure the
+# tool layer passed straight to the LLM agent.
+
+
+def _install_fake_ib(monkeypatch: pytest.MonkeyPatch, ib_cls) -> None:
+    module = types.ModuleType("ib_async")
+    module.IB = ib_cls
+    module.Stock = _FakeStock
+    module.Contract = _FakeContract
+    monkeypatch.setitem(sys.modules, "ib_async", module)
+    monkeypatch.setattr(local, "tcp_port_open", lambda *_, **__: True)
+    monkeypatch.setattr(local._pool._local, "refcount", 0)
+    monkeypatch.setattr(local._pool._local, "ib", None)
+
+
+def test_default_market_data_type_is_free_delayed() -> None:
+    """Default tier must not be 1 (live), which requires a paid subscription."""
+    assert local.DEFAULT_MARKET_DATA_TYPE == 3
+    assert local.IBKRLocalConfig().market_data_type == 3
+    assert local.MARKET_DATA_TYPES[3] == "delayed"
+
+
+def test_quote_selects_tier_before_requesting_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reqMarketDataType is called with the configured tier before reqMktData."""
+    calls: list[tuple[str, object]] = []
+
+    class _TierIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            calls.append(("tier", tier))
+
+        def reqMktData(self, contract, genericTickList, snapshot, regulatorySnapshot):
+            calls.append(("mktdata", contract.symbol))
+            return SimpleNamespace(bid=1.0, ask=1.1, last=1.05, close=1.0, volume=1, time="")
+
+    _install_fake_ib(monkeypatch, _TierIB)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper", market_data_type=4))
+
+    assert calls == [("tier", 4), ("mktdata", "AAPL")], calls
+    assert result["market_data_type_requested"] == "delayed-frozen"
+    assert result["market_data_type_applied"] == "delayed-frozen"
+    assert "warning" not in result
+
+
+def test_historical_bars_select_tier_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tier hint is applied ahead of reqHistoricalData as well."""
+    calls: list[str] = []
+
+    class _TierIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            calls.append(f"tier:{tier}")
+
+        def reqHistoricalData(self, contract, **kwargs):
+            calls.append("history")
+            return [SimpleNamespace(date="2026-05-29", open=1, high=2, low=0.5, close=1.5, volume=100)]
+
+    _install_fake_ib(monkeypatch, _TierIB)
+
+    local.get_historical_bars("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+
+    assert calls == ["tier:3", "history"], calls
+
+
+def test_starved_ticker_reports_no_data_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ticker that never fills must not be reported as a successful quote."""
+
+    class _StarvedIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            return None
+
+        def reqMktData(self, contract, genericTickList, snapshot, regulatorySnapshot):
+            return SimpleNamespace(bid=None, ask=None, last=None, close=None, volume=None, time="")
+
+    _install_fake_ib(monkeypatch, _StarvedIB)
+    # Keep the poll short — the real default is a 5s wall-clock timeout.
+    monkeypatch.setattr(local, "_wait_for_tick", lambda *_, **__: False)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+
+    assert result["status"] == "no_data"
+    assert result["quote"]["last"] is None
+    assert "market-data subscription" in result["error"]
+
+
+def test_tier_hint_is_best_effort_against_old_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stub without reqMarketDataType, or one that raises, must not break reads."""
+
+    class _RaisingIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            raise RuntimeError("not supported by this SDK build")
+
+    _install_fake_ib(monkeypatch, _RaisingIB)
+    assert local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))["status"] == "ok"
+
+    # _FakeIB itself has no reqMarketDataType at all — the getattr path.
+    _install_fake_ib(monkeypatch, _FakeIB)
+    assert local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))["status"] == "ok"
+
+
+@pytest.mark.parametrize("sdk_kind", ["raises", "missing"])
+def test_unapplied_tier_is_never_reported_as_applied(
+    monkeypatch: pytest.MonkeyPatch, sdk_kind: str
+) -> None:
+    """A tier we failed to select must not be echoed back as the tier in force.
+
+    A quote served on TWS's own default tier is byte-identical to one served on
+    the requested tier, so claiming the requested tier was applied is the one
+    thing the response must never do.
+    """
+
+    class _RaisingIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            raise RuntimeError("not supported by this SDK build")
+
+    _install_fake_ib(monkeypatch, _RaisingIB if sdk_kind == "raises" else _FakeIB)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+
+    assert result["status"] == "ok"
+    assert result["market_data_type_requested"] == "delayed"
+    assert result["market_data_type_applied"] is None
+    assert "was NOT applied" in result["warning"]
+
+
+def test_starved_quote_names_the_unapplied_tier_as_the_likely_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the tier never applied, that is the diagnosis — not a missing feed."""
+
+    class _RaisingStarvedIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            raise RuntimeError("not supported by this SDK build")
+
+        def reqMktData(self, contract, genericTickList, snapshot, regulatorySnapshot):
+            return SimpleNamespace(bid=None, ask=None, last=None, close=None, volume=None, time="")
+
+    _install_fake_ib(monkeypatch, _RaisingStarvedIB)
+    monkeypatch.setattr(local, "_wait_for_tick", lambda *_, **__: False)
+
+    result = local.get_quote("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+
+    assert result["status"] == "no_data"
+    assert result["market_data_type_applied"] is None
+    assert "tier was not applied" in result["error"]
+    assert "market-data subscription" in result["error"]
+
+
+def test_historical_bars_report_tier_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The history path carries the same requested/applied provenance as quotes."""
+
+    class _TierIB(_FakeIB):
+        def reqMarketDataType(self, tier):
+            return None
+
+        def reqHistoricalData(self, contract, **kwargs):
+            return [SimpleNamespace(date="2026-05-29", open=1, high=2, low=0.5, close=1.5, volume=100)]
+
+    _install_fake_ib(monkeypatch, _TierIB)
+    applied = local.get_historical_bars("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+    assert applied["market_data_type_requested"] == "delayed"
+    assert applied["market_data_type_applied"] == "delayed"
+    assert "warning" not in applied
+
+    class _RaisingIB(_TierIB):
+        def reqMarketDataType(self, tier):
+            raise RuntimeError("not supported by this SDK build")
+
+    _install_fake_ib(monkeypatch, _RaisingIB)
+    unapplied = local.get_historical_bars("AAPL", config=local.IBKRLocalConfig(profile="paper"))
+    assert unapplied["status"] == "ok"
+    assert unapplied["market_data_type_applied"] is None
+    assert "was NOT applied" in unapplied["warning"]
+
+
+@pytest.mark.parametrize("bad", [0, 5, -1, "banana", "0"])
+def test_invalid_market_data_type_is_rejected(bad) -> None:
+    """Config validation refuses tiers TWS does not define."""
+    with pytest.raises(ValueError, match="market_data_type"):
+        local.IBKRLocalConfig.from_mapping({"profile": "paper", "market_data_type": bad})
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [("live", 1), ("frozen", 2), ("delayed", 3), ("delayed-frozen", 4), ("3", 3), (None, 3), ("", 3)],
+)
+def test_market_data_type_accepts_names_codes_and_blanks(given, expected) -> None:
+    """Tier may be given as its TWS name or code; blank falls back to the free tier."""
+    cfg = local.IBKRLocalConfig.from_mapping({"profile": "paper", "market_data_type": given})
+    assert cfg.market_data_type == expected

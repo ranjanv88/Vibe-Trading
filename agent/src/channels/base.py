@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from src.channels.bus.events import InboundMessage, OutboundMessage
+from src.channels.bus.events import DeliveryReceipt, InboundMessage, OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.pairing import (
     PAIRING_CODE_META_KEY,
@@ -32,6 +31,8 @@ class BaseChannel(ABC):
     send_tool_hints: bool = False
     show_reasoning: bool = True
 
+    supports_connection_test: ClassVar[bool] = False
+
     def __init__(self, config: Any, bus: MessageBus) -> None:
         """Initialize the channel.
 
@@ -54,6 +55,20 @@ class BaseChannel(ABC):
         Override in subclasses that support interactive login.
         """
         return True
+
+    async def test_connection(self) -> dict[str, Any]:
+        """Probe this channel's credentials without starting it.
+
+        Default implementation reports ``unsupported``; adapters that can
+        validate credentials against a standalone endpoint override this and set
+        :attr:`supports_connection_test` to True.
+
+        Returns:
+            A JSON-serializable envelope with a boolean ``ok`` and a string
+            ``code`` of ``ok`` / ``invalid_credentials`` / ``network`` /
+            ``unsupported``.
+        """
+        return {"ok": False, "code": "unsupported"}
 
     @abstractmethod
     async def start(self) -> None:
@@ -79,6 +94,18 @@ class BaseChannel(ABC):
         Implementations should raise on delivery failure so the channel manager
         can apply any retry policy in one place.
         """
+
+    async def send_with_receipt(self, msg: OutboundMessage) -> DeliveryReceipt:
+        """Send and return the strongest generic acknowledgement available.
+
+        Existing adapters remain compatible through ``accepted``. Adapters
+        that expose provider message ids should override this method and return
+        ``sent`` only after receiving that id.
+        """
+        import time
+
+        await self.send(msg)
+        return DeliveryReceipt(status="accepted", sent_at=int(time.time() * 1000))
 
     # --- Streaming hooks (override in subclasses) ---
 

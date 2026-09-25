@@ -57,6 +57,12 @@ class TestMapSymbol:
         assert yahoo_client.map_symbol("AAPL.US") == "AAPL"
         assert yahoo_client.map_symbol("aapl.us") == "aapl"
 
+        # US class shares: dot form is unserved by Yahoo (live-verified
+        # empty chart); the hyphen form is what the chart API needs (#1351).
+        assert yahoo_client.map_symbol("BRK.B.US") == "BRK-B"
+        assert yahoo_client.map_symbol("BRK.A.US") == "BRK-A"
+        assert yahoo_client.map_symbol("BF.B.US") == "BF-B"
+
     def test_hk_normalized_to_four_digits(self):
         assert yahoo_client.map_symbol("00700.HK") == "0700.HK"
         assert yahoo_client.map_symbol("09988.HK") == "9988.HK"
@@ -67,6 +73,8 @@ class TestMapSymbol:
     def test_passthrough_for_other_symbols(self):
         assert yahoo_client.map_symbol("BTC-USD") == "BTC-USD"
         assert yahoo_client.map_symbol("^GSPC") == "^GSPC"
+        assert yahoo_client.map_symbol("TD.TO") == "TD.TO"
+        assert yahoo_client.map_symbol("PNG.V") == "PNG.V"
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +115,12 @@ class TestGetChart:
 
         monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
 
-        rows = yahoo_client.get_chart("AAPL.US", interval="1d", range_="5d")
+        rows, currency = yahoo_client.get_chart("AAPL.US", interval="1d", range_="5d")
 
         assert captured["url"].endswith("/AAPL")
-        assert captured["params"] == {"interval": "1d", "range": "5d"}
+        assert captured["params"] == {"interval": "1d", "range": "5d", "events": "div,splits"}
+        # No meta in this payload -> no declared currency.
+        assert currency == ""
         # Third bar has null OHLC and must be dropped.
         assert len(rows) == 2
         assert rows[0] == {
@@ -123,6 +133,80 @@ class TestGetChart:
         }
         assert rows[1]["trade_date"] == 1700086400
 
+    def test_adjclose_scales_ohlc_and_keeps_volume(self, monkeypatch):
+        def fake_get_json(url, **kwargs):
+            return {
+                "chart": {
+                    "error": None,
+                    "result": [
+                        {
+                            "timestamp": [1700000000, 1700086400],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [400.0, 100.0],
+                                        "high": [410.0, 105.0],
+                                        "low": [390.0, 95.0],
+                                        "close": [405.0, 100.0],
+                                        "volume": [1000, 4000],
+                                    }
+                                ],
+                                # Yahoo's quote series already carries splits,
+                                # so the ratio here is the DIVIDEND factor. It
+                                # is exaggerated (0.25) rather than realistic
+                                # (~0.96) only so the scaling is legible in the
+                                # assertions below.
+                                "adjclose": [{"adjclose": [101.25, 100.0]}],
+                            },
+                        }
+                    ],
+                }
+            }
+
+        monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
+
+        rows, _ = yahoo_client.get_chart("AAPL.US", range_="5d")
+
+        assert rows[0]["close"] == 405.0 * (101.25 / 405.0)
+        assert rows[0]["high"] == 410.0 * (101.25 / 405.0)
+        assert rows[1]["close"] == 100.0
+        # Split-adjusted prices, raw volume on both bars.
+        assert rows[0]["volume"] == 1000.0
+        assert rows[1]["volume"] == 4000.0
+
+    def test_missing_or_bad_adjclose_keeps_raw_prices(self, monkeypatch):
+        def fake_get_json(url, **kwargs):
+            return {
+                "chart": {
+                    "error": None,
+                    "result": [
+                        {
+                            "timestamp": [1700000000, 1700086400, 1700172800],
+                            "indicators": {
+                                "quote": [
+                                    {
+                                        "open": [10.0, 11.0, 12.0],
+                                        "high": [10.5, 11.5, 12.5],
+                                        "low": [9.5, 10.5, 11.5],
+                                        "close": [10.2, 11.2, 12.2],
+                                        "volume": [100, 200, 300],
+                                    }
+                                ],
+                                "adjclose": [{"adjclose": [None, 0.0, 12.2]}],
+                            },
+                        }
+                    ],
+                }
+            }
+
+        monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
+
+        rows, _ = yahoo_client.get_chart("AAPL.US", range_="5d")
+
+        assert rows[0]["close"] == 10.2
+        assert rows[1]["close"] == 11.2
+        assert rows[2]["close"] == 12.2
+
     def test_period_window_when_no_range(self, monkeypatch):
         captured: Dict[str, Any] = {}
 
@@ -132,10 +216,11 @@ class TestGetChart:
 
         monkeypatch.setattr(yahoo_client, "throttled_get_json", fake_get_json)
 
-        rows = yahoo_client.get_chart("0700.HK", period1=100, period2=200)
+        rows, currency = yahoo_client.get_chart("0700.HK", period1=100, period2=200)
 
         assert rows == []
-        assert captured["params"] == {"interval": "1d", "period1": 100, "period2": 200}
+        assert currency == ""
+        assert captured["params"] == {"interval": "1d", "period1": 100, "period2": 200, "events": "div,splits"}
 
     def test_chart_error_raises(self, monkeypatch):
         def fake_get_json(url, **kwargs):

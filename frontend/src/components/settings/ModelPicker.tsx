@@ -104,7 +104,7 @@ export function ModelPicker({
           id={listId}
           role="listbox"
           aria-label={optionsAriaLabel}
-          className="absolute z-50 mt-1.5 max-h-64 w-full overflow-y-auto rounded-md border bg-card p-1.5 shadow-lg ring-1 ring-black/5"
+          className="absolute z-50 mt-1.5 max-h-64 w-max min-w-full max-w-[min(32rem,90vw)] overflow-y-auto overflow-x-hidden rounded-md border bg-card p-1.5 shadow-lg ring-1 ring-black/5"
         >
           {uniqueOptions.map((model, index) => {
             const selected = model === value;
@@ -119,11 +119,11 @@ export function ModelPicker({
                 onMouseEnter={() => setActiveIndex(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => select(model)}
-                className={`flex w-full items-center justify-between gap-3 rounded px-2.5 py-2 text-left text-sm transition-colors ${
+                className={`flex w-full items-center gap-3 rounded px-2.5 py-2 text-left text-sm transition-colors ${
                   active ? "bg-muted text-foreground" : "text-foreground hover:bg-muted/70"
                 }`}
               >
-                <span className="min-w-0 truncate font-medium">{model}</span>
+                <span className="min-w-0 whitespace-normal break-words font-medium">{model}</span>
                 <Check className={`h-4 w-4 shrink-0 text-primary ${selected ? "opacity-100" : "opacity-0"}`} />
               </button>
             );

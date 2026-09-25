@@ -28,6 +28,15 @@ class ProviderCapabilities:
             be normalized to ``""`` for strict providers.
         openrouter_reasoning_body: Whether ``extra_body.reasoning`` is a valid
             OpenRouter request option.
+        top_level_reasoning_effort: Whether the provider accepts a top-level
+            ``reasoning_effort`` field on ``/v1/chat/completions``. **A positive
+            allowlist, and it stays one.** Speaking the OpenAI wire format does
+            not imply accepting every OpenAI field: an endpoint that validates
+            its request body strictly rejects the unknown key and the call
+            fails, so a provider gets this only once someone has watched a real
+            request to it succeed. Leave it False until then — the cost of False
+            is that ``LANGCHAIN_REASONING_EFFORT`` has no effect there, and the
+            cost of a wrong True is that every request fails.
         default_headers: Provider-scoped headers passed to ChatOpenAI.
         native_adapter_package: Optional native adapter package to report.
     """
@@ -40,6 +49,7 @@ class ProviderCapabilities:
     gemini_thought_signatures: bool = False
     normalize_assistant_content: bool = False
     openrouter_reasoning_body: bool = False
+    top_level_reasoning_effort: bool = False
     default_headers: Mapping[str, str] = field(default_factory=dict)
     native_adapter_package: Optional[str] = None
 
@@ -62,6 +72,14 @@ def _package_version() -> str:
 
 
 _VIBE_USER_AGENT = f"Vibe-Trading/{_package_version()}"
+
+
+@lru_cache(maxsize=1)
+def _gh_cli_token() -> str:
+    """Return an explicit Copilot token; the SDK handles stored credentials."""
+    from src.providers.copilot_auth import resolve_copilot_token
+
+    return resolve_copilot_token()[0]
 
 
 _MOONSHOT_CAPABILITIES = ProviderCapabilities(
@@ -93,6 +111,21 @@ _NVIDIA_CAPABILITIES = ProviderCapabilities(
     default_headers={"User-Agent": _VIBE_USER_AGENT},
 )
 
+
+# OpenCode Go / Zen relay (opencode.ai). Speaks the OpenAI wire format and
+# serves DeepSeek/GLM/Kimi models that stream ``reasoning_content``. OpenCode
+# Go additionally requires a stable per-conversation ``x-opencode-session``
+# header (400 ``MissingSessionID`` without it); that value depends on the
+# active session and is injected at request time in ``llm.py``. The
+# User-Agent is the client identification the service asks for.
+_OPENCODE_CAPABILITIES = ProviderCapabilities(
+    "opencode",
+    "OPENCODE_API_KEY",
+    "OPENCODE_BASE_URL",
+    capture_reasoning=True,
+    default_headers={"User-Agent": _VIBE_USER_AGENT},
+)
+
 # GLM thinking models (glm-4.5+/glm-5.x) stream the chain-of-thought as
 # ``reasoning_content`` with the final answer in ``content``. Capture the
 # reasoning like DeepSeek; do NOT replay it on assistant turns —
@@ -117,9 +150,26 @@ _OPENAI_CODEX_CAPABILITIES = ProviderCapabilities(
     "openai-codex", None, "OPENAI_CODEX_BASE_URL"
 )
 
+# GitHub Copilot is routed through the official SDK in ``build_llm``.
+_COPILOT_CAPABILITIES = ProviderCapabilities(
+    "copilot",
+    "COPILOT_GITHUB_TOKEN",
+    "COPILOT_BASE_URL",
+)
+
 
 _PROVIDERS: dict[str, ProviderCapabilities] = {
-    "openai": ProviderCapabilities("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
+    # ``gpt-5.6-*`` reject function tools on /v1/chat/completions unless the
+    # request carries an explicit ``reasoning_effort`` — including the literal
+    # "none" — so this one is required, not merely accepted. Still gated on the
+    # base URL at the call site: pointing OPENAI_BASE_URL at Ollama, LiteLLM or
+    # a corporate proxy keeps the label while changing who answers.
+    "openai": ProviderCapabilities(
+        "openai",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        top_level_reasoning_effort=True,
+    ),
     "anthropic": ProviderCapabilities(
         "anthropic",
         "ANTHROPIC_API_KEY",
@@ -133,21 +183,15 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         capture_reasoning=True,
         openrouter_reasoning_body=True,
     ),
-    # Requesty is an OpenAI-compatible LLM gateway using the same
-    # ``provider/model`` naming and the same opt-in ``extra_body.reasoning``
-    # request option as OpenRouter, so it shares OpenRouter's capability shape.
-    "requesty": ProviderCapabilities(
-        "requesty",
-        "REQUESTY_API_KEY",
-        "REQUESTY_BASE_URL",
-        capture_reasoning=True,
-        openrouter_reasoning_body=True,
-    ),
+    # Verified live against DeepSeek Flash in #1025: a chat-completions request
+    # carrying top-level ``reasoning_effort`` came back with reasoning content
+    # and non-zero reasoning usage.
     "deepseek": ProviderCapabilities(
         "deepseek",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
         capture_reasoning=True,
+        top_level_reasoning_effort=True,
         native_adapter_package="langchain-deepseek",
     ),
     "siliconflow-cn": ProviderCapabilities(
@@ -169,6 +213,10 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
         gemini_thought_signatures=True,
     ),
     "groq": ProviderCapabilities("groq", "GROQ_API_KEY", "GROQ_BASE_URL"),
+    # Novita AI is an OpenAI-compatible inference cloud using ``vendor/model``
+    # naming. The v1 chat path exposes no reasoning fields, so no capability
+    # flags are set and it rides the generic OpenAI-compatible path.
+    "novita": ProviderCapabilities("novita", "NOVITA_API_KEY", "NOVITA_BASE_URL"),
     "dashscope": ProviderCapabilities(
         "dashscope", "DASHSCOPE_API_KEY", "DASHSCOPE_BASE_URL"
     ),
@@ -183,9 +231,17 @@ _PROVIDERS: dict[str, ProviderCapabilities] = {
     "spark": _SPARK_CAPABILITIES,
     "iflytek": _SPARK_CAPABILITIES,
     "zai": ProviderCapabilities("zai", "ZAI_API_KEY", "ZAI_BASE_URL"),
+    "modelscope": ProviderCapabilities(
+        "modelscope",
+        "MODELSCOPE_API_KEY",
+        "MODELSCOPE_BASE_URL",
+    ),
     "ollama": ProviderCapabilities("ollama", None, "OLLAMA_BASE_URL"),
+    "copilot": _COPILOT_CAPABILITIES,
+    "github-copilot": _COPILOT_CAPABILITIES,
     "openai-codex": _OPENAI_CODEX_CAPABILITIES,
     "openai_codex": _OPENAI_CODEX_CAPABILITIES,
+    "opencode": _OPENCODE_CAPABILITIES,
     "opencode-zen": ProviderCapabilities(
         "opencode-zen", "OPENAI_API_KEY", "OPENAI_BASE_URL"
     ),
@@ -228,7 +284,7 @@ def get_provider_capabilities(
     Notes:
         Model-name inference (``_infer_from_model``) activates for the default
         ``"openai"`` provider and empty/None providers. Explicit non-OpenAI
-        providers (OpenRouter, Requesty, DeepSeek, etc.) are never inferred —
+        providers (OpenRouter, DeepSeek, etc.) are never inferred —
         the explicit provider choice always wins.
     """
     normalized = (provider or "").strip().lower().replace("_", "-")
@@ -307,7 +363,10 @@ def get_llm_credentials(
         Reads dynamic env vars via ``os.getenv`` — not part of ``EnvConfig``.
         When no base URL is set in the environment, falls back to the provider
         catalog's ``default_base_url`` so a provider set without an explicit
-        ``*_BASE_URL`` still hits its canonical endpoint.
+        ``*_BASE_URL`` still hits its canonical endpoint. Ollama URLs are
+        normalized here to its OpenAI-compatible ``/v1`` root so diagnostics,
+        preflight, environment synchronization, and runtime construction all
+        consume the same endpoint.
     """
     caps = get_provider_capabilities(provider, model)
     key_env, base_env = caps.api_key_env, caps.base_url_env
@@ -324,6 +383,9 @@ def get_llm_credentials(
             or "ollama"
         )
 
+    if caps.name == "copilot" and not api_key:
+        api_key = _gh_cli_token()
+
     base_url = (
         (
             os.getenv(base_env, "")  # noqa: env-gate — dynamic provider URL chain
@@ -338,6 +400,10 @@ def get_llm_credentials(
         )
         or _provider_default_base_url(caps.name)
     )
+    if caps.name == "ollama":
+        base_url = base_url.strip().rstrip("/")
+        if base_url and not base_url.endswith("/v1"):
+            base_url = f"{base_url}/v1"
 
     return {
         "provider": (provider or "").strip().lower(),

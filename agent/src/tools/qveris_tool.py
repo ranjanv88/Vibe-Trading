@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import tempfile
 import threading
 import time
@@ -16,6 +15,7 @@ from typing import Any
 
 import httpx
 
+from backtest.loaders.qveris_loader import quoted_call_cost
 from src.agent.tools import BaseTool
 
 SIGNUP_URL = "https://qveris.ai/?ref=Vyjjo5G_1cAHJA"
@@ -151,16 +151,38 @@ def _json_response(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _unconfigured_message(config: QVerisConfig | None = None) -> str:
+    """Build an actionable error message when QVeris routing is unavailable.
+
+    Args:
+        config: Optional pre-loaded configuration; defaults to
+            :func:`load_qveris_config`.
+
+    Returns:
+        Operator-facing error text. When no API key is saved it names
+        ``QVERIS_API_KEY`` and the paid-mode switch; when a key exists but
+        paid routing is off it points at the paid-mode toggle only.
+    """
+    cfg = config or load_qveris_config()
+    if not has_qveris_credentials(cfg):
+        return (
+            "QVeris is not configured; set QVERIS_API_KEY and enable paid mode "
+            "(`vibe-trading data mode paid` or Settings -> QVeris) to use QVeris tools"
+        )
+    return (
+        "QVeris paid mode is off; enable it with `vibe-trading data mode paid` "
+        "or Settings -> QVeris to use QVeris tools"
+    )
+
+
 def _parse_expected_cost(value: Any) -> float | None:
-    """Extract a numeric expected-cost hint from QVeris metadata."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    match = re.search(r"-?\d+(?:\.\d+)?", str(value))
-    if not match:
-        return None
-    return float(match.group(0))
+    """Return the flat per-call price a QVeris quote states, or None.
+
+    The leading number of a quote is not a price when the quote is per result:
+    "1 credits/result" billed 9.66 credits for one stock-year (#1494). Shared
+    with the bar loader so the two budget gates read a quote the same way.
+    """
+    return quoted_call_cost(value)
 
 
 def _quote_from_tool(tool: dict[str, Any] | None) -> dict[str, Any]:
@@ -397,7 +419,7 @@ class QVerisSearchTool(_QVerisBaseTool):
         it is rejected rather than sent to the marketplace as ``""``.
         """
         if not is_qveris_configured():
-            return _json_response({"ok": False, "error": "QVeris is not configured"})
+            return _json_response({"ok": False, "error": _unconfigured_message()})
         query = kwargs.get("query")
         if not isinstance(query, str) or not query.strip():
             return _json_response(
@@ -436,7 +458,7 @@ class QVerisInspectTool(_QVerisBaseTool):
 
     def execute(self, **kwargs: Any) -> str:
         if not is_qveris_configured():
-            return _json_response({"ok": False, "error": "QVeris is not configured"})
+            return _json_response({"ok": False, "error": _unconfigured_message()})
         payload = self._client().inspect(
             list(kwargs["tool_ids"]),
             search_id=kwargs.get("search_id"),
@@ -474,21 +496,73 @@ class QVerisExecuteTool(_QVerisBaseTool):
     def _quote(
         self, client: QVerisClient, tool_id: str, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        quote = {
-            "tool_id": tool_id,
-            "expected_cost": kwargs.get("expected_cost"),
-            "billing_rule": kwargs.get("billing_rule"),
-        }
-        if quote["expected_cost"] is not None or quote["billing_rule"] is not None:
-            return quote
-        inspected = client.inspect(
-            [tool_id],
-            search_id=kwargs.get("search_id"),
-            session_id=kwargs.get("session_id"),
+        """Return the quote the budget reservation is computed from.
+
+        A caller-supplied quote is a hint, never the authority. ``expected_cost``
+        and ``billing_rule`` are ordinary tool arguments, so they are written by
+        whatever drives the tool — an LLM on the agent path, an arbitrary client
+        over MCP. Previously either one short-circuited the server lookup and
+        was adopted verbatim, so ``expected_cost=0`` reserved nothing and every
+        call cleared the pre-check regardless of the real price.
+
+        The server is consulted and the reservation takes the LARGER of the two
+        figures, so an honest caller is unaffected and an understating one
+        cannot buy a free pass. A non-positive cost is treated as "unknown"
+        rather than "free" unless the server itself attested it, because a
+        caller can always write zero.
+
+        Args:
+            client: Marketplace client used for the authoritative lookup.
+            tool_id: Capability being priced.
+            kwargs: Raw tool arguments, possibly carrying a caller quote.
+
+        Returns:
+            Quote dict whose ``expected_cost`` is the effective figure, plus
+            ``quote_source`` and ``server_attested`` for the audit trail.
+        """
+        supplied = _parse_expected_cost(kwargs.get("expected_cost"))
+        server_quote: dict[str, Any] = {}
+        server_cost: float | None = None
+        try:
+            inspected = client.inspect(
+                [tool_id],
+                search_id=kwargs.get("search_id"),
+                session_id=kwargs.get("session_id"),
+            )
+        except Exception:  # noqa: BLE001 - an unreachable marketplace must not
+            inspected = None  # crash the caller; it degrades to the hint below.
+        if isinstance(inspected, dict):
+            results = inspected.get("results")
+            first = results[0] if isinstance(results, list) and results else None
+            server_quote = _quote_from_tool(first)
+            server_cost = _parse_expected_cost(server_quote.get("expected_cost"))
+
+        # A marketplace quote that is not a flat per-call price bounds nothing,
+        # and a caller hint must not stand in for it: a written number would
+        # then buy a call whose bill the budget cannot cap.
+        server_unbounded = server_quote.get("expected_cost") is not None and server_cost is None
+        candidates = [cost for cost in (supplied, server_cost) if cost is not None]
+        effective = None if server_unbounded else (max(candidates) if candidates else None)
+
+        quote = dict(server_quote)
+        quote["tool_id"] = tool_id
+        quote["expected_cost"] = effective
+        quote["billing_rule"] = server_quote.get("billing_rule") or kwargs.get(
+            "billing_rule"
         )
-        results = inspected.get("results") if isinstance(inspected, dict) else None
-        first = results[0] if isinstance(results, list) and results else None
-        return _quote_from_tool(first)
+        quote["server_attested"] = server_cost is not None
+        quote["caller_supplied_cost"] = supplied
+        if server_unbounded:
+            quote["quote_source"] = "server_quote_not_per_call"
+        elif server_cost is not None and supplied is not None and supplied < server_cost:
+            quote["quote_source"] = "server_overrode_lower_caller_quote"
+        elif server_cost is not None:
+            quote["quote_source"] = "server"
+        elif supplied is not None:
+            quote["quote_source"] = "caller_hint_unverified"
+        else:
+            quote["quote_source"] = "unavailable"
+        return quote
 
     def execute(self, **kwargs: Any) -> str:
         """Execute a QVeris capability behind the per-session credit budget.
@@ -501,7 +575,7 @@ class QVerisExecuteTool(_QVerisBaseTool):
         """
         cfg = load_qveris_config()
         if not is_qveris_configured(cfg):
-            return _json_response({"ok": False, "error": "QVeris is not configured"})
+            return _json_response({"ok": False, "error": _unconfigured_message(cfg)})
         raw_tool_id = kwargs.get("tool_id")
         if not isinstance(raw_tool_id, str) or not raw_tool_id.strip():
             return _json_response(
@@ -530,9 +604,28 @@ class QVerisExecuteTool(_QVerisBaseTool):
         with _SESSION_BUDGET_LOCK:
             spent = _SESSION_SPEND.get(session_id, 0.0)
             reserved = _SESSION_RESERVED.get(session_id, 0.0)
+            # A zero reservation is only trustworthy when the marketplace itself
+            # quoted it. A caller can always write zero, and that used to clear
+            # the pre-check while reserving nothing.
             valid_quote = (
-                expected is not None and math.isfinite(expected) and expected >= 0.0
+                expected is not None
+                and math.isfinite(expected)
+                and (expected > 0.0 or (expected == 0.0 and quote.get("server_attested")))
             )
+            if expected is None and (
+                quote.get("quote_source") == "server_quote_not_per_call"
+                or kwargs.get("expected_cost") is not None
+            ):
+                return _json_response(
+                    {
+                        "ok": False,
+                        "status": "quote_not_bounded",
+                        "error": "the quote is not a flat price per call, so the "
+                        "session credit budget cannot bound this call's bill (#1494)",
+                        "budget_credits_per_session": budget,
+                        "quote": quote,
+                    }
+                )
             if (
                 not valid_quote
                 or spent >= budget

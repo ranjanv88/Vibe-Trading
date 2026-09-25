@@ -352,24 +352,49 @@ class Registry:
         except Exception as exc:  # noqa: BLE001 — isolate compute failure
             raise RegistryError(f"{alpha_id}: compute() raised: {exc}") from exc
 
+        # Enforce NaN contract: any bar where a declared dependency is missing
+        # must produce NaN in the output, regardless of the alpha's internal logic.
+        # The mask's shape reference is the first declared dependency, not a
+        # hardcoded "close": 78 alphas declare columns_required without close,
+        # and the mask must still run for them. Pre-checks above guarantee every
+        # declared dependency is present in the panel.
+        deps = list(meta.get("columns_required", [])) + list(meta.get("extras_required", []))
+        if meta.get("requires_sector"):
+            deps.append("sector")
+        ref = next((panel[c] for c in deps if c in panel), None)
+        if ref is not None:
+            mask = pd.DataFrame(True, index=ref.index, columns=ref.columns)
+            for col in meta.get("columns_required", []):
+                mask = mask & panel[col].notna()
+            for col in meta.get("extras_required", []):
+                mask = mask & panel[col].notna()
+            if meta.get("requires_sector"):
+                mask = mask & panel["sector"].notna()
+            if isinstance(result, pd.DataFrame):
+                result = result.where(mask)
         return self._validate_output(alpha_id, result, panel)
 
     def _load_module(self, alpha: Alpha) -> ModuleType:
         if not self._use_filesystem_loader:
             return importlib.import_module(alpha.module_path)
         py_file = self._py_paths[alpha.id]
-        cached = sys.modules.get(alpha.module_path)
+        # A custom zoo_root reuses the bundled module names, so the import cache
+        # is keyed by root as well as by module path: under the bare module path
+        # this module replaced the bundled one process-wide, and the bundled
+        # registry's own import_module then returned the custom code (#1465).
+        cache_key = f"{alpha.module_path}@{self._zoo_root}"
+        cached = sys.modules.get(cache_key)
         if cached is not None and getattr(cached, "__file__", None) == str(py_file):
             return cached
         spec = importlib.util.spec_from_file_location(alpha.module_path, py_file)
         if spec is None or spec.loader is None:
             raise RegistryError(f"{alpha.id}: could not build import spec for {py_file}")
         module = importlib.util.module_from_spec(spec)
-        sys.modules[alpha.module_path] = module
+        sys.modules[cache_key] = module
         try:
             spec.loader.exec_module(module)
         except Exception:
-            sys.modules.pop(alpha.module_path, None)
+            sys.modules.pop(cache_key, None)
             raise
         return module
 

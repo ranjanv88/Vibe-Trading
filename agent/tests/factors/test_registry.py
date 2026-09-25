@@ -254,3 +254,106 @@ def test_export_manifest_shape(mini_zoo: Path) -> None:
     assert "generated_at" in m
     assert m["zoos"][0]["zoo_id"] == "fakezoo"
     assert len(m["zoos"][0]["alphas"]) == 4
+
+
+def test_registry_masks_nan_on_declared_dependencies(mini_zoo: Path) -> None:
+    reg = Registry(zoo_root=mini_zoo)
+    panel = _panel()
+    # NaN in a required column should propagate to output
+    panel["close"].iloc[2, 0] = np.nan
+    out = reg.compute("fakezoo_001", panel)
+    assert np.isnan(out.iloc[2, 0])
+    # Also test with NaN in another required column
+    panel = _panel()
+    panel["open"].iloc[1, 1] = np.nan
+    out = reg.compute("fakezoo_001", panel)
+    assert np.isnan(out.iloc[1, 1])
+
+
+def test_registry_masks_nan_without_close_declared(mini_zoo: Path) -> None:
+    """The NaN mask must run even when the alpha does not declare ``close``.
+
+    The mask's shape reference was hardcoded to ``panel["close"]``, so an alpha
+    declaring only ``["open"]`` got no NaN enforcement on a panel without a
+    close column — a fabricated value (np.where on a NaN comparison) survived.
+    The reference is now the first declared dependency.
+    """
+    reg = Registry(zoo_root=mini_zoo)
+    meta = GOOD_META.replace('"close", "open"', '"open"')
+    body = textwrap.dedent(
+        """\
+        import numpy as np
+        import pandas as pd
+
+        def compute(panel):
+            o = panel["open"]
+            # NaN < 0 is False: a missing bar falls through to 0.0 (fabricated).
+            return pd.DataFrame(np.where(o < 0, 1.0, 0.0), index=o.index, columns=o.columns)
+        """
+    )
+    _write_alpha(mini_zoo / "fakezoo", "alpha_005", "fakezoo", meta=meta, body=body)
+    reg = Registry(zoo_root=mini_zoo)
+    panel = _panel()
+    del panel["close"]  # no close column at all
+    panel["open"].iloc[2, 0] = np.nan
+    out = reg.compute("fakezoo_005", panel)
+    assert np.isnan(out.iloc[2, 0])  # masked, not the fabricated 0.0
+    assert out.notna().sum().sum() > 0  # mask did not wipe the whole panel
+
+
+# ---------------- filesystem loader vs the bundled module cache ----------------
+
+
+def _wave_panel(n: int = 30) -> dict[str, pd.DataFrame]:
+    """A panel that rises and falls, so cntp5's output is not a constant."""
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    cols = ["X", "Y"]
+    wave = np.sin(np.arange(n, dtype=float)).reshape(n, 1)
+    close = pd.DataFrame(np.repeat(wave, 2, axis=1), index=idx, columns=cols)
+    return {"close": close, "open": close * 0.99}
+
+
+def test_custom_zoo_root_does_not_shadow_the_bundled_module(tmp_path: Path) -> None:
+    """A custom zoo_root must not replace a bundled alpha process-wide (#1465).
+
+    Both roots derive the same ``module_path``
+    (``src.factors.zoo.<zoo>.<short>``), and the filesystem loader registered its
+    module under that bare name in ``sys.modules``. The bundled registry's own
+    ``importlib.import_module`` then returned the custom module, so a default
+    ``Registry()`` silently computed the custom code.
+    """
+    zoo_root = tmp_path / "zoo"
+    (zoo_root / "qlib158").mkdir(parents=True)
+    _write_alpha(
+        zoo_root / "qlib158",
+        "cntp5",
+        "qlib158",
+        body="""
+        import pandas as pd
+
+        def compute(panel):
+            c = panel["close"]
+            return pd.DataFrame(1.0, index=c.index, columns=c.columns)
+        """,
+    )
+
+    module_path = "src.factors.zoo.qlib158.cntp5"
+    previous = sys.modules.get(module_path)
+    try:
+        panel = _wave_panel()
+        # Bundled registry: this imports the real module into sys.modules.
+        bundled = Registry().compute("qlib158_cntp5", panel)
+        # A custom root reusing the same zoo/alpha names must not touch it.
+        # Modules load lazily, so the custom root has to compute for the
+        # collision to happen at all.
+        custom = Registry(zoo_root=zoo_root).compute("qlib158_cntp5", panel)
+        assert (custom.to_numpy() == 1.0).all()  # the custom root did load its file
+        again = Registry().compute("qlib158_cntp5", panel)
+    finally:
+        if previous is None:
+            sys.modules.pop(module_path, None)
+        else:
+            sys.modules[module_path] = previous
+
+    assert not (bundled.to_numpy() == 1.0).all()  # baseline is the real alpha
+    pd.testing.assert_frame_equal(bundled, again)

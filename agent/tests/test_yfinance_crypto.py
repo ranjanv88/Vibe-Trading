@@ -35,6 +35,10 @@ class TestToYfinanceSymbolCrypto:
     def test_us_suffix_stripped(self) -> None:
         assert _to_yfinance_symbol("AAPL.US") == "AAPL"
 
+    def test_canadian_equities_keep_yahoo_suffix(self) -> None:
+        assert _to_yfinance_symbol("TD.TO") == "TD.TO"
+        assert _to_yfinance_symbol("PNG.V") == "PNG.V"
+
     def test_whitespace_stripped(self) -> None:
         assert _to_yfinance_symbol("  BTC-USDT  ") == "BTC-USD"
 
@@ -53,6 +57,9 @@ class TestDataLoaderCryptoMarket:
 
     def test_hk_equity_still_supported(self) -> None:
         assert "hk_equity" in DataLoader.markets
+
+    def test_canadian_equity_supported(self) -> None:
+        assert "ca_equity" in DataLoader.markets
 
     def test_does_not_require_auth(self) -> None:
         assert DataLoader.requires_auth is False

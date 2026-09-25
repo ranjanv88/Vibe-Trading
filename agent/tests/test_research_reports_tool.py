@@ -8,6 +8,7 @@ test reaches a live endpoint.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -47,6 +48,17 @@ _THS_PAYLOAD = {
         {"year": "2025", "eps": "14.50"},
     ]
 }
+
+
+class _FrozenDatetime(datetime):
+    """``datetime`` with a pinned ``now()`` so default-window tests are exact.
+
+    Subclassing keeps ``strptime`` intact, which ``_parse_date_param`` needs.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D102 - see class docstring
+        return datetime(2026, 8, 13, 12, 0, 0)
 
 
 def _fake_response(payload: dict, status_ok: bool = True):
@@ -158,3 +170,59 @@ def test_empty_coverage_returns_error_envelope():
     payload = json.loads(out)
     assert payload["ok"] is False
     assert "no research coverage" in payload["error"]
+
+
+def test_default_window_is_the_trailing_two_years():
+    # Eastmoney rejects a request with no window (HTTP 400), so both bounds must
+    # always be sent even when the caller supplies neither.
+    with patch.object(rrt, "datetime", _FrozenDatetime), patch.object(
+        rrt, "get_json", return_value=_REPORT_PAYLOAD
+    ) as mock_em, patch.object(
+        rrt, "throttled_get", return_value=_fake_response(_THS_PAYLOAD)
+    ):
+        out = ResearchReportsTool().execute(code="600519.SH")
+
+    assert json.loads(out)["ok"] is True
+    params = mock_em.call_args.kwargs["params"]
+    assert params["beginTime"] == "20240813"
+    assert params["endTime"] == "20260813"
+
+
+def test_explicit_window_is_forwarded_verbatim():
+    with patch.object(rrt, "get_json", return_value=_REPORT_PAYLOAD) as mock_em, patch.object(
+        rrt, "throttled_get", return_value=_fake_response(_THS_PAYLOAD)
+    ):
+        out = ResearchReportsTool().execute(
+            code="600519.SH", beginTime="20240101", endTime="20261231"
+        )
+
+    assert json.loads(out)["ok"] is True
+    params = mock_em.call_args.kwargs["params"]
+    assert params["beginTime"] == "20240101"
+    assert params["endTime"] == "20261231"
+
+
+def test_malformed_date_returns_error_without_http():
+    with patch.object(rrt, "get_json") as mock_em, patch.object(rrt, "throttled_get") as mock_ths:
+        out = ResearchReportsTool().execute(code="600519.SH", beginTime="2024-01-01")
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "YYYYMMDD" in payload["error"]
+    mock_em.assert_not_called()
+    mock_ths.assert_not_called()
+
+
+def test_reversed_window_is_rejected_not_reported_as_missing_coverage():
+    # Eastmoney answers a reversed window with HTTP 200 and zero hits. Without
+    # this guard the empty result becomes "no research coverage found", which is
+    # a false claim about the company instead of an error about the request.
+    with patch.object(rrt, "get_json") as mock_em, patch.object(rrt, "throttled_get") as mock_ths:
+        out = ResearchReportsTool().execute(
+            code="600519.SH", beginTime="20261231", endTime="20240101"
+        )
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "must not be later than" in payload["error"]
+    assert "no research coverage" not in payload["error"]
+    mock_em.assert_not_called()
+    mock_ths.assert_not_called()

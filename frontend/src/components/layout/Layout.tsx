@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router";
-import { Activity, BarChart3, Bot, CalendarClock, Check, ChevronDown, FileText, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2 } from "lucide-react";
+import { Activity, BarChart3, Bot, CalendarClock, CandlestickChart, Check, ChevronDown, FileText, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2, WalletCards } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
@@ -24,7 +24,9 @@ export function Layout() {
     { to: "/runtime", icon: Activity, label: t('layout.runtime') },
     { to: "/scheduled", icon: CalendarClock, label: t('layout.scheduled') },
     { to: "/reports", icon: FileText, label: t('layout.reports') },
+    { to: "/portfolio", icon: WalletCards, label: t('layout.portfolio') },
     { to: "/alpha-zoo", icon: Layers, label: t('layout.alphaZoo') },
+    { to: "/options", icon: CandlestickChart, label: t('layout.optionsLab') },
     { to: "/settings", icon: Settings, label: t('layout.settings') },
     { to: "/correlation", icon: BarChart3, label: t('layout.correlation') },
   ];
@@ -306,7 +308,7 @@ export function Layout() {
       {/* Main */}
       <div className="relative flex-1 flex flex-col overflow-hidden">
         <ConnectionBanner status={sseStatus} retryAttempt={sseRetryAttempt} />
-        <main id="main" className="flex-1 overflow-auto">
+        <main id="main" className="flex-1 min-h-0 overflow-auto">
           <Outlet />
         </main>
       </div>

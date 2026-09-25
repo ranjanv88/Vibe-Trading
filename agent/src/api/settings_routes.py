@@ -17,7 +17,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
-from src.config.accessor import reset_env_config
+from src.config.accessor import get_env_value, reset_env_config
 
 # Agent root (agent/) — resolved from this file's location (agent/src/api/).
 _AGENT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -100,15 +100,36 @@ class LLMModelsResponse(BaseModel):
     warning_code: Optional[ModelDiscoveryWarningCode] = None
 
 
+class SourceOrderEntry(BaseModel):
+    """One market's fallback-chain order (default + override state)."""
+
+    market: str
+    env_var: str
+    default_order: List[str]
+    effective_order: List[str]
+    override: Optional[List[str]] = None
+    override_invalid: bool = False
+
+
+class SourceOrderUpdate(BaseModel):
+    """Reorder one market's fallback chain (null/empty order = reset)."""
+
+    market: str
+    order: Optional[List[str]] = None
+
+
 class DataSourceSettingsResponse(BaseModel):
     """Current data source credential settings."""
 
     tushare_token_configured: bool
     tushare_token_hint: Optional[str] = None
+    gildata_token_configured: bool
+    gildata_token_hint: Optional[str] = None
     baostock_supported: bool
     baostock_installed: bool
     baostock_message: str
     env_path: str
+    source_orders: List[SourceOrderEntry] = Field(default_factory=list)
 
 
 class UpdateDataSourceSettingsRequest(BaseModel):
@@ -116,6 +137,9 @@ class UpdateDataSourceSettingsRequest(BaseModel):
 
     tushare_token: Optional[str] = None
     clear_tushare_token: bool = False
+    gildata_token: Optional[str] = None
+    clear_gildata_token: bool = False
+    source_orders: Optional[List[SourceOrderUpdate]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +174,20 @@ LLM_PROVIDER_BY_NAME = {provider.name: provider for provider in LLM_PROVIDERS}
 LLM_REASONING_EFFORTS = {"", "none", "low", "medium", "high", "max"}
 LLM_API_KEY_PLACEHOLDERS = {"", "sk-or-v1-your-key-here", "sk-xxx", "xxx", "gsk_xxx"}
 TUSHARE_TOKEN_PLACEHOLDERS = {"", "your-tushare-token"}
+GILDATA_TOKEN_PLACEHOLDERS = {"", "your-gildata-token"}
+
+
+def _desktop_secure_credential_names() -> set[str]:
+    """Return secrets owned by the desktop host when secure storage is active."""
+    names = {"TUSHARE_TOKEN", "QVERIS_API_KEY", "GILDATA_TOKEN"}
+    names.update(
+        provider.api_key_env for provider in LLM_PROVIDERS if provider.api_key_env
+    )
+    return names
+
+
+def _desktop_secure_credentials_enabled() -> bool:
+    return get_env_value("VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +244,13 @@ def _read_settings_env_values() -> Dict[str, str]:
     else:
         values = {}
 
+    if _desktop_secure_credentials_enabled():
+        for name in _desktop_secure_credential_names():
+            runtime_value = get_env_value(name)
+            if runtime_value:
+                values[name] = runtime_value
+            else:
+                values.pop(name, None)
     return values
 
 
@@ -264,12 +309,12 @@ async def _list_provider_models(
 ) -> LLMModelsResponse:
     """Best-effort live model discovery with a safe editable fallback."""
     fallback = [provider.default_model]
-    if provider.auth_type == "oauth":
+    if provider.auth_type in {"oauth", "gh_cli"}:
         return LLMModelsResponse(
             provider=provider.name,
             models=fallback,
             source="default",
-            warning_code="oauth_discovery_unsupported",
+            warning_code=f"{provider.auth_type}_discovery_unsupported",
         )
     if provider.api_key_required and not api_key:
         return LLMModelsResponse(
@@ -333,6 +378,15 @@ def _build_llm_settings_response(
             token = None
         api_key_configured = bool(token)
         api_key_hint = None
+    elif provider.auth_type == "gh_cli":
+        try:
+            from src.providers.copilot_auth import get_copilot_auth_status
+
+            authenticated, auth_status = get_copilot_auth_status()
+        except Exception:
+            authenticated, auth_status = False, ""
+        api_key_configured = authenticated
+        api_key_hint = auth_status if authenticated else None
     return LLMSettingsResponse(
         provider=provider.name,
         model_name=env_values.get("LANGCHAIN_MODEL_NAME", provider.default_model),
@@ -351,6 +405,70 @@ def _build_llm_settings_response(
     )
 
 
+def _build_source_orders(env_values: Dict[str, str]) -> List[SourceOrderEntry]:
+    """Build per-market source-order entries for the settings payload.
+
+    ``effective_order`` reflects the running process (registry state after a
+    refresh); ``override`` reflects the persisted dotenv value, with
+    ``override_invalid`` flagging values that failed validation (kept in the
+    file for transparency, but not applied).
+    """
+    from backtest.loaders import registry
+
+    registry.refresh_source_order_overrides()
+    entries: List[SourceOrderEntry] = []
+    for market in sorted(registry._DEFAULT_CHAINS):
+        env_var = registry.source_order_env_var(market)
+        default_order = registry.get_default_source_order(market)
+        parsed = registry.parse_source_order(env_values.get(env_var, ""))
+        entries.append(
+            SourceOrderEntry(
+                market=market,
+                env_var=env_var,
+                default_order=default_order,
+                effective_order=list(registry.FALLBACK_CHAINS.get(market, default_order)),
+                override=parsed or None,
+                override_invalid=bool(parsed)
+                and not registry.is_valid_source_order(market, parsed),
+            )
+        )
+    return entries
+
+
+def _validate_source_order_update(entry: SourceOrderUpdate) -> tuple[str, str]:
+    """Validate one market reorder; return ``(env_var, dotenv value)``.
+
+    A null/empty order — or one equal to the default — maps to an empty
+    string, which clears any persisted override for that market.
+    """
+    from backtest.loaders import registry
+
+    market = entry.market.strip()
+    default_order = registry.get_default_source_order(market)
+    if not default_order:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown market: {market!r}",
+        )
+    order = (
+        [name.strip().lower() for name in entry.order if name.strip()]
+        if entry.order
+        else []
+    )
+    if order and not registry.is_valid_source_order(market, order):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Invalid source order for {market}: must be a permutation of "
+                f"the default chain {default_order}"
+            ),
+        )
+    return (
+        registry.source_order_env_var(market),
+        "" if not order or order == default_order else ",".join(order),
+    )
+
+
 def _build_data_source_settings_response(
     values: Optional[Dict[str, str]] = None,
 ) -> DataSourceSettingsResponse:
@@ -359,6 +477,8 @@ def _build_data_source_settings_response(
     env_values = values if values is not None else _read_settings_env_values()
     token = env_values.get("TUSHARE_TOKEN", "")
     token_configured = host._is_configured_secret(token, TUSHARE_TOKEN_PLACEHOLDERS)
+    gildata = env_values.get("GILDATA_TOKEN", "")
+    gildata_configured = host._is_configured_secret(gildata, GILDATA_TOKEN_PLACEHOLDERS)
     # Late-access baostock helpers for monkeypatch compat.
     baostock_sup = getattr(host, "_baostock_supported", _baostock_supported)
     baostock_ins = getattr(host, "_baostock_installed", _baostock_installed)
@@ -373,10 +493,13 @@ def _build_data_source_settings_response(
     return DataSourceSettingsResponse(
         tushare_token_configured=token_configured,
         tushare_token_hint=None,
+        gildata_token_configured=gildata_configured,
+        gildata_token_hint=None,
         baostock_supported=supported,
         baostock_installed=installed,
         baostock_message=baostock_message,
         env_path=host._project_relative_path(host.ENV_PATH),
+        source_orders=_build_source_orders(env_values),
     )
 
 
@@ -389,7 +512,14 @@ def _sync_runtime_env(provider: LLMProviderOption, updates: Dict[str, str]) -> N
         else:
             os.environ.pop(key, None)
 
-    if provider.api_key_env:
+    if provider.auth_type == "gh_cli":
+        # The Copilot SDK owns credential discovery and transport.
+        os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.pop("OPENAI_API_BASE", None)
+        os.environ.pop("OPENAI_BASE_URL", None)
+        reset_env_config()
+        return
+    elif provider.api_key_env:
         key_value = os.environ.get(provider.api_key_env, "")  # noqa: env-gate — dynamic provider api_key_env
         if host._is_configured_secret(key_value, LLM_API_KEY_PLACEHOLDERS):
             os.environ["OPENAI_API_KEY"] = key_value
@@ -429,6 +559,10 @@ def _persist_settings_updates(updates: Dict[str, str]) -> Dict[str, str]:
     merged = dict(updates)
     if not target.exists() and legacy != target and legacy.exists():
         merged = {**host._read_env_values(legacy), **updates}
+    if _desktop_secure_credentials_enabled():
+        # Empty known secret keys in dotenv while preserving the decrypted
+        # environment values injected by Electron for this process.
+        merged.update({name: "" for name in _desktop_secure_credential_names()})
     try:
         host._write_env_values(target, merged)
     except OSError as exc:
@@ -439,7 +573,7 @@ def _persist_settings_updates(updates: Dict[str, str]) -> Dict[str, str]:
                 "~/.vibe-trading/.env"
             ),
         ) from exc
-    return host._read_env_values(target)
+    return _read_settings_env_values()
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +769,26 @@ def register_settings_routes(
         elif "TUSHARE_TOKEN" in current_values:
             updates["TUSHARE_TOKEN"] = current_values["TUSHARE_TOKEN"]
 
+        if payload.clear_gildata_token:
+            updates["GILDATA_TOKEN"] = ""
+        elif payload.gildata_token is not None and payload.gildata_token.strip():
+            updates["GILDATA_TOKEN"] = payload.gildata_token.strip()
+        elif "GILDATA_TOKEN" in current_values:
+            updates["GILDATA_TOKEN"] = current_values["GILDATA_TOKEN"]
+
+        # Per-market source-order overrides: validate first (400 on a bad
+        # permutation *before* anything is persisted), then merge only the
+        # entries that actually change the dotenv (no-op saves don't grow
+        # the file with 12 identical lines).
+        order_updates: Dict[str, str] = {}
+        if payload.source_orders is not None:
+            for order_entry in payload.source_orders:
+                env_var, value = _validate_source_order_update(order_entry)
+                order_updates[env_var] = value
+            for env_var, value in order_updates.items():
+                if value != current_values.get(env_var, ""):
+                    updates[env_var] = value
+
         if updates:
             saved_values = _persist_settings_updates(updates)
             token = updates.get("TUSHARE_TOKEN", "").strip()
@@ -642,6 +796,21 @@ def register_settings_routes(
                 os.environ["TUSHARE_TOKEN"] = token
             else:
                 os.environ.pop("TUSHARE_TOKEN", None)
+            gildata_token = updates.get("GILDATA_TOKEN", "").strip()
+            if host_ref._is_configured_secret(gildata_token, GILDATA_TOKEN_PLACEHOLDERS):
+                os.environ["GILDATA_TOKEN"] = gildata_token
+            else:
+                os.environ.pop("GILDATA_TOKEN", None)
+            # Hot-apply source-order overrides in this process.
+            for env_var, value in order_updates.items():
+                if value:
+                    os.environ[env_var] = value
+                else:
+                    os.environ.pop(env_var, None)
+            if order_updates:
+                from backtest.loaders import registry
+
+                registry.refresh_source_order_overrides()
             reset_env_config()
 
         return _build_data_source_settings_response(

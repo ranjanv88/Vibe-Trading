@@ -97,6 +97,8 @@ class _LongAnswerLLM:
         tools: list[Any] | None = None,
         on_text_chunk: Callable[[str], None] | None = None,
         on_reasoning_chunk: Callable[[str], None] | None = None,
+        timeout: int | None = None,
+        idle_timeout_s: float | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> _LongAnswerResponse:
         del messages, tools, on_reasoning_chunk

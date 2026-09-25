@@ -28,9 +28,12 @@ import json
 import logging
 from typing import Any
 
-from backtest.loaders.eastmoney_client import get_json, resolve_secid
+from backtest.loaders import sec_frames
+from backtest.loaders import yahoo_client
+from backtest.loaders.eastmoney_client import datacenter_rejection, get_json, resolve_secid
 from backtest.loaders.sec_edgar_client import cik_for, get_company_facts
 from src.agent.tools import BaseTool
+from src.tools._result_paging import fit_records
 
 logger = logging.getLogger(__name__)
 
@@ -138,16 +141,19 @@ def _truncate_period(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cap_periods(periods: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the most recent periods, each truncated to a safe field count.
+    """Cap each period's field count, keeping every period.
+
+    The record count is no longer clipped here: ``execute`` pages whole periods
+    against the result-size budget, so clipping at the parser would put the
+    older history permanently out of reach of any ``offset``.
 
     Args:
         periods: Period records as returned by the provider parser.
 
     Returns:
-        A new list of at most :data:`_MAX_PERIODS` field-capped records.
+        A new list of field-capped records, one per input period.
     """
-    capped = periods[:_MAX_PERIODS]
-    return [_truncate_period(record) for record in capped]
+    return [_truncate_period(record) for record in periods]
 
 
 def _eastmoney_market_group(secid: str) -> str | None:
@@ -280,7 +286,101 @@ def _fetch_eastmoney_statement(
         logger.warning("eastmoney statement fetch failed for %s: %s", code, exc)
         return {"error": str(exc)}
 
+    rejection = datacenter_rejection(payload)
+    if rejection is not None:
+        # A stale report or column reads as a rejection, not as no filings (#1502).
+        return {"error": f"eastmoney rejected the request: {rejection}"}
     periods = _filter_by_period(_parse_eastmoney_periods(payload), period)
+    return {"periods": _cap_periods(periods)}
+
+
+# Yahoo quoteSummary module + result-key per (statement, cadence). UK
+# (.L) names have no Eastmoney or SEC filing pipeline; Yahoo's
+# crumb-gated quoteSummary serves annual and quarterly histories for
+# LSE tickers (UK parity, #1206).
+_YAHOO_STATEMENT_MODULES: dict[tuple[str, str], tuple[str, str]] = {
+    ("balance", "annual"): ("balanceSheetHistory", "balanceSheetStatements"),
+    ("balance", "quarter"): ("balanceSheetHistoryQuarterly", "balanceSheetStatements"),
+    ("income", "annual"): ("incomeStatementHistory", "incomeStatementHistory"),
+    ("income", "quarter"): ("incomeStatementHistoryQuarterly", "incomeStatementHistory"),
+    ("cashflow", "annual"): ("cashflowStatementHistory", "cashflowStatements"),
+    ("cashflow", "quarter"): ("cashflowStatementHistoryQuarterly", "cashflowStatements"),
+}
+_YAHOO_INDICATOR_MODULES = ["financialData", "defaultKeyStatistics"]
+# {raw, fmt, longFmt} value shapes; keep the numeric raw only.
+_YAHOO_NUMERIC_KEYS = {"raw", "longFmt", "fmt"}
+
+
+def _yahoo_value(value: Any) -> Any:
+    """Flatten a Yahoo ``{raw, fmt, ...}`` value to plain numbers/integers.
+
+    Args:
+        value: A Yahoo quoteSummary value (``{raw, fmt, longFmt}``) or a
+            scalar (``str``/``int``/``float``/``bool``/``None``).
+
+    Returns:
+        The numeric ``raw`` when present (``None`` when raw is missing), or the
+        scalar itself. Text values like ``"2026-08-24"`` pass through.
+    """
+    if isinstance(value, dict):
+        if "raw" in value:
+            return value.get("raw")
+        return {k: _yahoo_value(v) for k, v in value.items() if k not in _YAHOO_NUMERIC_KEYS}
+    return value
+
+
+def _fetch_yahoo_statement(
+    code: str, *, statement: str, period: str
+) -> dict[str, Any]:
+    """Fetch one UK (.L) statement/indicators from Yahoo quoteSummary.
+
+    Args:
+        code: UK symbol (e.g. ``"VOD.L"``).
+        statement: One of :data:`_VALID_STATEMENTS`.
+        period: ``"annual"`` or ``"quarter"`` — selects the corresponding
+            history module; both exist for LSE tickers.
+
+    Returns:
+        ``{"periods": [...]}`` on success or ``{"error": ...}`` on failure;
+        never raises.
+    """
+    if statement == "indicators":
+        modules = _YAHOO_INDICATOR_MODULES
+    else:
+        module, key = _YAHOO_STATEMENT_MODULES[(statement, period)]
+        modules = [module]
+    try:
+        result = yahoo_client.get_quote_summary(code, modules)
+    except Exception as exc:  # noqa: BLE001 - one bad fetch must not kill the call
+        logger.warning("yahoo statement fetch failed for %s: %s", code, exc)
+        return {"error": str(exc)}
+
+    if statement == "indicators":
+        record: dict[str, Any] = {}
+        for module in modules:
+            block = result.get(module) or {}
+            for field, value in block.items():
+                if field == "maxAge":
+                    continue
+                record[field] = _yahoo_value(value)
+        return {"periods": [record]} if record else {"error": "no indicator data"}
+
+    block = result.get(module) or {}
+    rows = block.get(key) or []
+    periods = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        flat: dict[str, Any] = {}
+        for field, value in row.items():
+            if field in ("maxAge",):
+                continue
+            flat[field] = _yahoo_value(value)
+        if flat:
+            periods.append(flat)
+    if not periods:
+        return {"error": f"Yahoo returned no {statement} history for {code}"}
+    periods.sort(key=lambda row: str(row.get("endDate") or ""), reverse=True)
     return {"periods": _cap_periods(periods)}
 
 
@@ -304,13 +404,184 @@ def _pick_sec_unit(units: dict[str, Any]) -> tuple[str, list[Any]]:
     return best_key, best_rows
 
 
-def _sec_period_matches(row: dict[str, Any], period: str) -> bool:
-    """Return whether a SEC fact row belongs in the requested cadence."""
+def _sec_instant_matches(row: dict[str, Any], period: str) -> bool:
+    """Return whether an instant (balance-sheet) fact belongs in the cadence.
+
+    Instant facts carry no span, so their cadence can only be read off the
+    filing they came from: a fiscal-year-end balance sheet is the one reported
+    on a 10-K.
+
+    Args:
+        row: One SEC ``companyfacts`` unit row with no ``start``.
+        period: ``"annual"`` or ``"quarter"``.
+
+    Returns:
+        ``True`` when the fact should be kept.
+    """
     if period != "annual":
         return True
     fp = str(row.get("fp") or "").upper()
     form = str(row.get("form") or "").upper()
     return fp == "FY" or form == "10-K"
+
+
+def _record_sec_fact(
+    bucket: dict[tuple[Any, Any], dict[str, Any]],
+    row: dict[str, Any],
+    concept_name: str,
+    value: float,
+    unit_key: str,
+) -> None:
+    """Merge one fact into the period record identified by its ``(start, end)``.
+
+    A period is filed once as the primary period and then repeated as a
+    comparative in later filings, which may restate it. The earliest filing
+    carries the correct fiscal label, the latest carries the current value, so
+    both are kept and both dates are surfaced.
+
+    Args:
+        bucket: Period records keyed by :func:`sec_frames.frame_key`.
+        row: One SEC ``companyfacts`` unit row.
+        concept_name: The us-gaap concept this value belongs to.
+        value: The parsed numeric value.
+        unit_key: The unit bucket the value came from (e.g. ``"USD"``).
+    """
+    key = sec_frames.frame_key(row)
+    filed = str(row.get("filed") or "")
+    record = bucket.get(key)
+    if record is None:
+        days = sec_frames.span_days(row)
+        record = bucket[key] = {
+            "REPORT_DATE": row.get("end"),
+            "PERIOD_START": row.get("start"),
+            "PERIOD_DAYS": days,
+            "PERIOD_TYPE": sec_frames.classify_span(days),
+            "FISCAL_YEAR": row.get("fy"),
+            "FISCAL_PERIOD": row.get("fp"),
+            "FORM": row.get("form"),
+            "ACCESSION": row.get("accn"),
+            "FILED": filed or None,
+            "LAST_FILED": filed or None,
+            "_units": {},
+            "_filed": {},
+        }
+    if filed and filed < (record["FILED"] or filed):
+        record["FISCAL_YEAR"] = row.get("fy")
+        record["FISCAL_PERIOD"] = row.get("fp")
+        record["FORM"] = row.get("form")
+        record["ACCESSION"] = row.get("accn")
+        record["FILED"] = filed
+    if filed > (record["LAST_FILED"] or ""):
+        record["LAST_FILED"] = filed
+    if filed >= record["_filed"].get(concept_name, ""):
+        record["_filed"][concept_name] = filed
+        record[concept_name] = value
+        record["_units"][concept_name] = unit_key
+
+
+def _synthesize_fiscal_q4(
+    frames: dict[tuple[Any, Any], dict[str, Any]],
+    annual_frames: dict[tuple[Any, Any], dict[str, Any]],
+) -> None:
+    """Derive fiscal Q4 rows, which issuers report only inside the 10-K.
+
+    Flow concepts are never filed as a standalone Q4 duration frame, so without
+    this the fourth quarter simply vanishes from a quarterly series. It is
+    derived as ``FY - (Q1 + Q2 + Q3)``, the same way
+    :mod:`backtest.loaders.fundamentals_loader` derives it for the PIT panel,
+    and marked ``DERIVED`` so a computed figure is never mistaken for a filed
+    one.
+
+    Args:
+        frames: True-quarter period records; synthesized rows are added here.
+        annual_frames: Full-year period records used as the raw material.
+    """
+    quarter_ends = {
+        record["REPORT_DATE"]
+        for record in frames.values()
+        if record["PERIOD_TYPE"] == sec_frames.QUARTER
+    }
+    for (start, end), annual in annual_frames.items():
+        if not start or end in quarter_ends:
+            continue
+        inside = [
+            record
+            for record in frames.values()
+            if record["PERIOD_TYPE"] == sec_frames.QUARTER
+            and record["PERIOD_START"]
+            and record["PERIOD_START"] >= start
+            and record["REPORT_DATE"] < end
+        ]
+        if len(inside) != 3:
+            continue
+        values = {
+            concept: annual[concept] - sum(quarter[concept] for quarter in inside)
+            for concept in annual["_units"]
+            if all(concept in quarter for quarter in inside)
+        }
+        if not values:
+            continue
+        q4_start = max(quarter["REPORT_DATE"] for quarter in inside)
+        filed = max(
+            [annual["FILED"] or ""] + [quarter["FILED"] or "" for quarter in inside]
+        )
+        record = {
+            "REPORT_DATE": end,
+            "PERIOD_START": q4_start,
+            "PERIOD_DAYS": sec_frames.span_days({"start": q4_start, "end": end}),
+            "PERIOD_TYPE": sec_frames.QUARTER,
+            "FISCAL_YEAR": annual["FISCAL_YEAR"],
+            "FISCAL_PERIOD": "Q4",
+            "FORM": annual["FORM"],
+            "ACCESSION": annual["ACCESSION"],
+            "FILED": filed or None,
+            "LAST_FILED": filed or None,
+            "DERIVED": "FY - (Q1 + Q2 + Q3)",
+            "_units": {concept: annual["_units"][concept] for concept in values},
+            "_filed": {},
+        }
+        record.update(values)
+        frames[(q4_start, end)] = record
+
+
+def _merge_sec_instants(
+    frames: dict[tuple[Any, Any], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fold instant facts into the duration period ending on the same day.
+
+    ``indicators`` mixes balance-sheet concepts (instant) with income-statement
+    concepts (duration); without merging, one reporting period would come back
+    as two half-populated rows.
+
+    Args:
+        frames: All period records for the requested cadence.
+
+    Returns:
+        One record per reporting period.
+    """
+    durations = [
+        record
+        for record in frames.values()
+        if record["PERIOD_TYPE"] != sec_frames.INSTANT
+    ]
+    instants = {
+        record["REPORT_DATE"]: record
+        for record in frames.values()
+        if record["PERIOD_TYPE"] == sec_frames.INSTANT
+    }
+    if not durations:
+        return list(instants.values())
+    for record in durations:
+        instant = instants.get(record["REPORT_DATE"])
+        if instant is None:
+            continue
+        for concept, unit_key in instant["_units"].items():
+            record.setdefault(concept, instant[concept])
+            record["_units"].setdefault(concept, unit_key)
+    covered = {record["REPORT_DATE"] for record in durations}
+    return durations + [
+        record for end, record in instants.items() if end not in covered
+    ]
 
 
 def _fetch_sec_statement(code: str, *, statement: str, period: str) -> dict[str, Any]:
@@ -343,7 +614,12 @@ def _fetch_sec_statement(code: str, *, statement: str, period: str) -> dict[str,
     if not isinstance(gaap, dict):
         return {"periods": []}
 
-    periods_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    # Keyed on the ``(start, end)`` span, never on ``end`` alone: a 10-Q files
+    # the true quarter and the year-to-date frame under the same end date, and
+    # the same fy/fp/form/accn, so any narrower key silently lets one overwrite
+    # the other.
+    frames: dict[tuple[Any, Any], dict[str, Any]] = {}
+    annual_frames: dict[tuple[Any, Any], dict[str, Any]] = {}
     for concept_name in _SEC_CONCEPTS[statement]:
         concept = gaap.get(concept_name)
         units = concept.get("units") if isinstance(concept, dict) else None
@@ -351,37 +627,43 @@ def _fetch_sec_statement(code: str, *, statement: str, period: str) -> dict[str,
             continue
         unit_key, rows = _pick_sec_unit(units)
         for row in rows:
-            if not isinstance(row, dict) or not _sec_period_matches(row, period):
+            if not isinstance(row, dict):
                 continue
-            end = row.get("end")
             value = _to_number(row.get("val"))
-            if not end or value is None:
+            if not row.get("end") or value is None:
                 continue
-            key = (end, row.get("fy"), row.get("fp"), row.get("form"), row.get("accn"))
-            period_row = periods_by_key.setdefault(
-                key,
-                {
-                    "REPORT_DATE": end,
-                    "FISCAL_YEAR": row.get("fy"),
-                    "FISCAL_PERIOD": row.get("fp"),
-                    "FORM": row.get("form"),
-                    "ACCESSION": row.get("accn"),
-                    "_units": {},
-                },
-            )
-            period_row[concept_name] = value
-            period_row["_units"][concept_name] = unit_key
+            kind = sec_frames.classify_span(sec_frames.span_days(row))
+            if kind == sec_frames.YTD:
+                continue
+            if kind == sec_frames.INSTANT:
+                if not _sec_instant_matches(row, period):
+                    continue
+                bucket = frames
+            elif kind == sec_frames.ANNUAL:
+                # A full year is the annual cadence, and the raw material for a
+                # synthesized fiscal Q4 when the cadence is quarterly.
+                bucket = frames if period == "annual" else annual_frames
+            else:
+                if period == "annual":
+                    continue
+                bucket = frames
+            _record_sec_fact(bucket, row, concept_name, value, unit_key)
+
+    if period == "quarter":
+        _synthesize_fiscal_q4(frames, annual_frames)
 
     periods = sorted(
-        periods_by_key.values(),
+        _merge_sec_instants(frames),
         key=lambda row: str(row.get("REPORT_DATE") or ""),
         reverse=True,
     )
+    for record in periods:
+        record.pop("_filed", None)
     return {"periods": _cap_periods(periods)}
 
 
 def _classify_market(code: str) -> str | None:
-    """Classify a symbol's suffix into ``a_share``, ``us``, ``hk``, or ``None``.
+    """Classify a symbol's suffix into ``a_share``, ``us``, ``hk``, ``uk``, or ``None``.
 
     Args:
         code: Symbol with a market suffix (e.g. ``"600519.SH"``, ``"AAPL.US"``).
@@ -396,6 +678,9 @@ def _classify_market(code: str) -> str | None:
         return "us"
     if suffix == "HK":
         return "hk"
+    if suffix == "L":
+        # London Stock Exchange (#1206).
+        return "uk"
     return None
 
 
@@ -406,9 +691,10 @@ class FinancialStatementsTool(BaseTool):
     description = (
         "Fetch a single stock's financial statements: balance sheet, income "
         "statement, cash-flow statement, or key per-period indicators (margins, "
-        "ROE, EPS, etc.). Markets: A-share (.SH/.SZ/.BJ), US (.US) and "
-        "Hong Kong (.HK). US uses SEC EDGAR companyfacts; A-share and HK use "
-        "Eastmoney. Reports come back newest-first as flat per-period rows. Use "
+        "ROE, EPS, etc.). Markets: A-share (.SH/.SZ/.BJ), US (.US), "
+        "Hong Kong (.HK) and UK LSE (.L). US uses SEC EDGAR companyfacts; "
+        "A-share and HK use Eastmoney; UK uses Yahoo quoteSummary (annual "
+        "history). Reports come back newest-first as flat per-period rows. Use "
         'this to read fundamentals before building a valuation or screen. Example: '
         '{"code": "600519.SH", "statement": "income", "period": "annual"}.'
     )
@@ -419,7 +705,7 @@ class FinancialStatementsTool(BaseTool):
                 "type": "string",
                 "description": (
                     "Single symbol with a market suffix, e.g. '600519.SH', "
-                    "'000001.SZ', 'AAPL.US', or '00700.HK'."
+                    "'000001.SZ', 'AAPL.US', '00700.HK', or 'VOD.L'."
                 ),
             },
             "statement": {
@@ -440,6 +726,15 @@ class FinancialStatementsTool(BaseTool):
                     "(quarterly reports)."
                 ),
                 "default": "annual",
+            },
+            "offset": {
+                "type": "integer",
+                "description": (
+                    "Index of the first period to return, newest first; "
+                    "defaults to 0. Periods are returned whole and only as many "
+                    "as fit one result — read paging.total and paging.next_offset "
+                    "in the response and call again to continue."
+                ),
             },
         },
         "required": ["code"],
@@ -477,12 +772,15 @@ class FinancialStatementsTool(BaseTool):
         market = _classify_market(code)
         if market is None:
             return _error(
-                "code must carry a supported suffix: .SH/.SZ/.BJ, .US, or .HK"
+                "code must carry a supported suffix: .SH/.SZ/.BJ, .US, .HK, or .L"
             )
 
         if market == "us":
             result = _fetch_sec_statement(code, statement=statement, period=period)
             source = "sec_edgar"
+        elif market == "uk":
+            result = _fetch_yahoo_statement(code, statement=statement, period=period)
+            source = "yahoo"
         else:
             result = _fetch_eastmoney_statement(
                 code, statement=statement, period=period
@@ -492,15 +790,38 @@ class FinancialStatementsTool(BaseTool):
         # The fetch failed for every requested code (here, the single ``code``)
         # iff its result carries an ``error``. Surface that as a top-level
         # ``ok: false`` so a nested failure is never masked by ``ok: true``.
-        all_failed = "error" in result
-        envelope: dict[str, Any] = {
-            "ok": not all_failed,
-            "market": market,
-            "source": source,
-            "statement": statement,
-            "period": period,
-            "data": {code: result},
-        }
-        if all_failed:
-            envelope["error"] = result["error"]
-        return json.dumps(envelope, ensure_ascii=False)
+        if "error" in result:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "market": market,
+                    "source": source,
+                    "statement": statement,
+                    "period": period,
+                    "data": {code: result},
+                    "error": result["error"],
+                },
+                ensure_ascii=False,
+            )
+
+        try:
+            offset = max(int(kwargs.get("offset") or 0), 0)
+        except (TypeError, ValueError):
+            return _error("offset must be an integer")
+
+        # Page whole periods. A raw character cut lands mid-record, and the
+        # model reads the periods that survived as the issuer's full history.
+        periods = result.get("periods") or []
+
+        def _build(page: list[dict[str, Any]], paging: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "market": market,
+                "source": source,
+                "statement": statement,
+                "period": period,
+                "paging": paging,
+                "data": {code: dict(result, periods=page)},
+            }
+
+        return fit_records(periods, offset, _build, max_records=_MAX_PERIODS)

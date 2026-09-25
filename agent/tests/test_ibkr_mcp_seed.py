@@ -65,7 +65,7 @@ def test_ibkr_seed_validates_as_readonly_probe() -> None:
     cfg = AgentConfig.model_validate({"mcpServers": {"ibkr": IBKR_MCP_SERVER_SEED}})
     server = cfg.mcp_servers["ibkr"]
 
-    assert server.url == "https://api.ibkr.com/v1/api/mcp"
+    assert server.url == "https://api.ibkr.com/v1/api/mcp-public"
     assert server.auth is not None
     assert server.auth.scopes == ["mcp.read"]
     assert server.enabled_tools == ["*"]

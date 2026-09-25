@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SUBCLASSES_CACHE: list[type[BaseTool]] | None = None
+_DISCOVERY_FAILURES: dict[str, str] = {}
 _SHELL_TOOL_NAMES = {"bash", "background_run", "cancel_background"}
 
 
@@ -38,18 +39,26 @@ def _discover_subclasses() -> list[type[BaseTool]]:
     Returns:
         List of concrete BaseTool subclasses with a non-empty name.
     """
-    global _SUBCLASSES_CACHE
+    global _SUBCLASSES_CACHE, _DISCOVERY_FAILURES
     if _SUBCLASSES_CACHE is not None:
         return _SUBCLASSES_CACHE
 
     pkg_dir = str(Path(__file__).parent)
+    discovery_failures: dict[str, str] = {}
     for _, module_name, _ in pkgutil.iter_modules([pkg_dir]):
         if module_name.startswith("_"):
             continue
         try:
             importlib.import_module(f"src.tools.{module_name}")
         except Exception as exc:
-            logger.warning("Skipped src.tools.%s: %s", module_name, exc)
+            reason = f"{type(exc).__name__}: {exc}"
+            discovery_failures[module_name] = reason
+            # Stays at WARNING: an operator who cannot see *which* module
+            # dropped out is back to the silent partial registry of #1124.
+            # The aggregate line below counts them; this one names them.
+            logger.warning(
+                "Skipped src.tools.%s during discovery: %s", module_name, reason
+            )
 
     classes: list[type[BaseTool]] = []
     queue = deque(BaseTool.__subclasses__())
@@ -60,6 +69,7 @@ def _discover_subclasses() -> list[type[BaseTool]]:
         queue.extend(cls.__subclasses__())
 
     _SUBCLASSES_CACHE = classes
+    _DISCOVERY_FAILURES = discovery_failures
     return classes
 
 
@@ -122,6 +132,7 @@ def build_registry(
     from src.tools.autopilot_tool import RunResearchAutopilotTool
     from src.tools.remember_tool import RememberTool
     from src.tools.swarm_tool import SwarmTool
+    from src.tools.scheduled_research_tool import ScheduledResearchTool
 
     goal_tool_classes = {
         StartResearchGoalTool,
@@ -131,9 +142,16 @@ def build_registry(
     }
     # Tools that need the host session id injected: they create or mutate the
     # session's research goal, and the LLM never knows the session id.
-    session_injected_classes = goal_tool_classes | {RunResearchAutopilotTool}
+    session_injected_classes = goal_tool_classes | {
+        RunResearchAutopilotTool,
+        ScheduledResearchTool,
+    }
+    classes = _discover_subclasses()
     registry = ToolRegistry()
-    for cls in _discover_subclasses():
+    for module_name, reason in _DISCOVERY_FAILURES.items():
+        registry.record_import_failure(module_name, reason)
+
+    for cls in classes:
         try:
             if cls.name in _SHELL_TOOL_NAMES and not include_shell_tools:
                 logger.info("Tool %s disabled by shell tool policy", cls.name)
@@ -150,7 +168,19 @@ def build_registry(
             else:
                 registry.register(cls())
         except Exception as exc:
-            logger.warning("Failed to register tool %s: %s", cls.name, exc)
+            reason = f"{type(exc).__name__}: {exc}"
+            registry.record_registration_failure(cls.name, reason)
+            logger.warning("Failed to register tool %s: %s", cls.name, reason)
+
+    local_failure_count = len(registry.import_failures) + len(
+        registry.registration_failures
+    )
+    if local_failure_count:
+        summary = (
+            f"Registered {len(registry)} local tools; {local_failure_count} tool "
+            "source(s) failed during registry construction"
+        )
+        logger.warning(summary)
 
     if agent_config and agent_config.mcp_servers:
         from src.tools.mcp import build_mcp_tool_wrappers, resolve_mcp_server_tool_name_segments
@@ -245,7 +275,12 @@ def build_registry(
     return registry
 
 
-def build_filtered_registry(tool_names: list[str], *, include_shell_tools: bool = False) -> ToolRegistry:
+def build_filtered_registry(
+    tool_names: list[str],
+    *,
+    include_shell_tools: bool = False,
+    skill_allowlist: list[str] | None = None,
+) -> ToolRegistry:
     """Build a ToolRegistry with only specified tools.
 
     Local-tools-only filtered builder. Swarm workers should call
@@ -256,12 +291,20 @@ def build_filtered_registry(tool_names: list[str], *, include_shell_tools: bool 
     Args:
         tool_names: Tool names to include.
         include_shell_tools: Whether to include filtered shell execution tools.
+        skill_allowlist: When not ``None``, the ``load_skill`` tool (if
+            whitelisted) is rebuilt to refuse skill names outside this list,
+            so a documented skill boundary is enforced at runtime.
 
     Returns:
         ToolRegistry containing only the requested tools.
     """
     full = build_registry(include_shell_tools=include_shell_tools)
-    return _filter_registry(full, tool_names, include_shell_tools=include_shell_tools)
+    return _filter_registry(
+        full,
+        tool_names,
+        include_shell_tools=include_shell_tools,
+        skill_allowlist=skill_allowlist,
+    )
 
 
 def build_swarm_registry(
@@ -269,6 +312,7 @@ def build_swarm_registry(
     *,
     agent_config: "AgentConfig | None" = None,
     include_shell_tools: bool = False,
+    skill_allowlist: list[str] | None = None,
 ) -> ToolRegistry:
     """Build a per-worker registry that merges local + remote MCP tools.
 
@@ -291,6 +335,9 @@ def build_swarm_registry(
             MCP wrappers are appended to the candidate pool before filtering.
             Pass ``None`` to keep the worker strictly local.
         include_shell_tools: Whether shell-execution tools are eligible.
+        skill_allowlist: When not ``None``, the ``load_skill`` tool (if
+            whitelisted) is rebuilt to refuse skill names outside this list,
+            enforcing the per-worker ``skills:`` boundary at runtime.
 
     Returns:
         ToolRegistry containing the whitelist intersection of local tools
@@ -305,7 +352,12 @@ def build_swarm_registry(
         include_shell_tools=include_shell_tools,
         _mcp_server_tool_name_segments=swarm_local_server_names,
     )
-    return _filter_registry(full, tool_names, include_shell_tools=include_shell_tools)
+    return _filter_registry(
+        full,
+        tool_names,
+        include_shell_tools=include_shell_tools,
+        skill_allowlist=skill_allowlist,
+    )
 
 
 def _prune_agent_config_for_swarm_tools(
@@ -344,6 +396,7 @@ def _filter_registry(
     tool_names: list[str],
     *,
     include_shell_tools: bool,
+    skill_allowlist: list[str] | None = None,
 ) -> ToolRegistry:
     """Project a full registry down to a whitelist with consistent drop logging."""
     filtered = ToolRegistry()
@@ -358,6 +411,12 @@ def _filter_registry(
                 "depends on it cannot execute it.",
                 name, include_shell_tools,
             )
+    if skill_allowlist is not None and filtered.get("load_skill") is not None:
+        # Rebuild load_skill with the boundary baked in. ``register`` replaces
+        # by name, so the unrestricted auto-discovered instance is dropped.
+        from src.tools.load_skill_tool import LoadSkillTool
+
+        filtered.register(LoadSkillTool(allowed_skills=frozenset(skill_allowlist)))
     return filtered
 
 

@@ -66,18 +66,6 @@ def test_provider_capabilities_are_provider_specific() -> None:
     assert openrouter.send_reasoning_content is False
 
 
-def test_requesty_capabilities_mirror_openrouter() -> None:
-    """Requesty is an OpenAI-compatible gateway wired like OpenRouter."""
-    requesty = get_provider_capabilities("requesty", "openai/gpt-4o-mini")
-
-    assert requesty.name == "requesty"
-    assert requesty.api_key_env == "REQUESTY_API_KEY"
-    assert requesty.base_url_env == "REQUESTY_BASE_URL"
-    assert requesty.capture_reasoning is True
-    assert requesty.openrouter_reasoning_body is True
-    assert requesty.send_reasoning_content is False
-
-
 def test_spark_capabilities_use_generic_openai_path() -> None:
     """iFlytek Spark rides the plain OpenAI-compatible path; iflytek is an alias."""
     spark = get_provider_capabilities("spark", "4.0Ultra")
@@ -89,6 +77,18 @@ def test_spark_capabilities_use_generic_openai_path() -> None:
     assert spark.send_reasoning_content is False
     assert spark.openrouter_reasoning_body is False
     assert get_provider_capabilities("iflytek", "4.0Ultra") is spark
+
+
+def test_novita_capabilities_use_generic_openai_path() -> None:
+    """Novita AI rides the plain OpenAI-compatible path with no capability flags."""
+    novita = get_provider_capabilities("novita", "moonshotai/kimi-k3")
+
+    assert novita.name == "novita"
+    assert novita.api_key_env == "NOVITA_API_KEY"
+    assert novita.base_url_env == "NOVITA_BASE_URL"
+    assert novita.capture_reasoning is False
+    assert novita.send_reasoning_content is False
+    assert novita.openrouter_reasoning_body is False
 
 
 def test_reasoning_effort_extra_body_is_openrouter_only() -> None:

@@ -31,6 +31,8 @@ from src.trading.connectors.okx import sdk as ox
 from src.trading.connectors.okx.classification import OKX_TOOL_CLASS
 from src.trading.connectors.shoonya import sdk as sh
 from src.trading.connectors.shoonya.classification import SHOONYA_TOOL_CLASS
+from src.trading.connectors.etoro import client as etoro_client
+from src.trading.connectors.etoro.classification import ETORO_TOOL_CLASS
 from src.trading.connectors.tiger import sdk as tg
 from src.trading.connectors.tiger.classification import TIGER_TOOL_CLASS
 
@@ -54,6 +56,11 @@ def test_sdk_profiles_registered() -> None:
         "futu-paper-sdk", "futu-live-sdk-readonly",
         "dhan-paper-sdk", "dhan-live-sdk-readonly",
         "shoonya-paper-sdk", "shoonya-live-sdk-readonly",
+        "etoro-paper-sdk", "etoro-paper-trade",
+        "etoro-live-sdk-readonly", "etoro-live-trade",
+        "kis-paper-sdk", "kis-paper-trade", "kis-live-sdk-readonly",
+        "upbit-paper-sdk", "upbit-paper-trade", "upbit-live-sdk-readonly",
+        "toss-live-sdk-readonly",
     } <= ids
 
 
@@ -62,7 +69,7 @@ def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
     Shoonya) must NOT register any live order-placing profile — the Longbridge
     precedent. A ``*-live-trade`` profile here would be a red-line regression."""
     ids = {p.id for p in profiles.list_profiles()}
-    for broker in ("longbridge", "dhan", "shoonya"):
+    for broker in ("longbridge", "dhan", "shoonya", "upbit"):
         assert f"{broker}-live-trade" not in ids
         # No live profile for these brokers may advertise an order capability.
         for p in profiles.list_profiles():
@@ -89,6 +96,8 @@ def test_no_discriminator_brokers_expose_no_live_trade_profile() -> None:
         ("dhan-live-sdk-readonly", "dhan", "live"),
         ("shoonya-paper-sdk", "shoonya", "paper"),
         ("shoonya-live-sdk-readonly", "shoonya", "live"),
+        ("etoro-paper-sdk", "etoro", "paper"),
+        ("etoro-live-sdk-readonly", "etoro", "live"),
     ],
 )
 def test_sdk_profiles_are_readonly_broker_sdk(profile_id, connector, environment) -> None:
@@ -412,6 +421,17 @@ def test_service_check_connection_unconfigured_longbridge(monkeypatch, tmp_path)
     assert result["transport"] == "broker_sdk"
 
 
+def test_service_check_connection_unconfigured_etoro(monkeypatch, tmp_path) -> None:
+    for env_name in ("ETORO_API_KEY", "ETORO_USER_KEY"):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setattr(etoro_client, "get_runtime_root", lambda: tmp_path)
+    result = service.check_connection("etoro-paper-sdk")
+    assert result["status"] == "error"
+    assert "not configured" in result["error"]
+    assert result["connector"] == "etoro"
+    assert result["transport"] == "broker_sdk"
+
+
 # --------------------------------------------------------------------------- #
 # Alpaca
 # --------------------------------------------------------------------------- #
@@ -499,6 +519,91 @@ def test_binance_classification() -> None:
     assert BINANCE_TOOL_CLASS["create_order"] is ToolClass.WRITE
     assert BINANCE_TOOL_CLASS["cancel_order"] is ToolClass.WRITE
     assert BINANCE_TOOL_CLASS["fetch_balance"] is ToolClass.READ
+    assert BINANCE_TOOL_CLASS["load_markets"] is ToolClass.READ
+
+
+def test_binance_search_instruments_resolves_exact_active_spot_pair(monkeypatch) -> None:
+    class FakeExchange:
+        def load_markets(self):
+            return {
+                "ETH/USDT": {
+                    "id": "ETHUSDT",
+                    "symbol": "ETH/USDT",
+                    "spot": True,
+                    "active": True,
+                },
+                "ETH/USDT:USDT": {
+                    "id": "ETHUSDT",
+                    "symbol": "ETH/USDT:USDT",
+                    "spot": False,
+                    "active": True,
+                },
+                "BTC/USDT": {
+                    "id": "BTCUSDT",
+                    "symbol": "BTC/USDT",
+                    "spot": True,
+                    "active": True,
+                },
+            }
+
+    monkeypatch.setattr(bn, "_exchange", lambda _cfg: FakeExchange())
+
+    result = bn.search_instruments(
+        "ETHUSDT",
+        config=bn.BinanceConfig(profile="paper"),
+    )
+
+    assert result == {
+        "status": "ok",
+        "query": "ETHUSDT",
+        "instruments": [
+            {
+                "symbol": "ETH-USDT",
+                "native_symbol": "ETH/USDT",
+                "exchange_symbol": "ETHUSDT",
+                "base": "ETH",
+                "quote": "USDT",
+                "market": "crypto",
+                "type": "cryptocurrency",
+                "exchange": "BINANCE",
+                "active": True,
+            }
+        ],
+    }
+
+
+def test_binance_search_instruments_does_not_guess_prose(monkeypatch) -> None:
+    def _unexpected_exchange(_cfg):
+        raise AssertionError("prose lookup must not load the Binance market catalog")
+
+    monkeypatch.setattr(bn, "_exchange", _unexpected_exchange)
+
+    result = bn.search_instruments(
+        "Ethereum",
+        config=bn.BinanceConfig(profile="paper"),
+    )
+
+    assert result == {"status": "ok", "query": "Ethereum", "instruments": []}
+
+
+def test_service_routes_instrument_search_to_selected_binance_profile(monkeypatch) -> None:
+    captured = {}
+
+    def _search(query, *, config, limit):
+        captured.update(query=query, profile=config.profile, limit=limit)
+        return {"status": "ok", "instruments": [{"symbol": "ETH-USDT"}]}
+
+    monkeypatch.setattr(bn, "search_instruments", _search)
+
+    result = service.search_instruments(
+        "ETH-USDT",
+        "binance-paper-trade",
+        limit=3,
+    )
+
+    assert captured == {"query": "ETH-USDT", "profile": "paper", "limit": 3}
+    assert result["profile_id"] == "binance-paper-trade"
+    assert result["connector"] == "binance"
 
 
 def test_binance_service_unconfigured(monkeypatch, tmp_path) -> None:
@@ -506,6 +611,57 @@ def test_binance_service_unconfigured(monkeypatch, tmp_path) -> None:
     result = service.check_connection("binance-paper-sdk")
     assert result["status"] == "error"
     assert result["connector"] == "binance"
+
+
+def test_binance_positions_replace_ld_wrappers_with_simple_earn(monkeypatch) -> None:
+    class FakeExchange:
+        def fetch_balance(self):
+            return {
+                "USDT": {"free": 12, "used": 0, "total": 12},
+                "LDBTC": {"free": 0, "used": 0.9, "total": 0.9},
+            }
+
+        def sapi_get_simple_earn_flexible_position(self, params):
+            assert params == {"size": 100}
+            return {"rows": [{"asset": "BTC", "totalAmount": "1.0"}]}
+
+    monkeypatch.setattr(bn, "_exchange", lambda _cfg: FakeExchange())
+    result = bn.get_positions(
+        bn.BinanceConfig(api_key="key", api_secret="secret", profile="live-readonly")
+    )
+
+    assert result["positions"] == [
+        {"symbol": "USDT", "quantity": 12.0, "free": 12.0, "used": 0.0, "source": "spot"},
+        {
+            "symbol": "BTC",
+            "quantity": 1.0,
+            "free": 0.0,
+            "used": 1.0,
+            "source": "simple_earn_flexible",
+        },
+    ]
+
+
+def test_binance_exchange_adjusts_for_server_time(monkeypatch) -> None:
+    captured = {}
+
+    class FakeExchange:
+        def __init__(self, config):
+            captured.update(config)
+
+        def set_sandbox_mode(self, enabled):
+            captured["sandbox"] = enabled
+
+    monkeypatch.setattr(bn, "_require_ccxt", lambda: SimpleNamespace(binance=FakeExchange))
+    monkeypatch.setattr(bn, "getproxies", lambda: {})
+
+    bn._exchange(bn.BinanceConfig(api_key="key", api_secret="secret", profile="live-readonly"))
+
+    assert captured["options"] == {
+        "adjustForTimeDifference": True,
+        "recvWindow": 10_000,
+    }
+    assert captured["sandbox"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -721,10 +877,22 @@ def test_in_broker_paper_place_order_simulated_locally(mod, Config) -> None:
 
 @pytest.mark.parametrize("mod, Config", [(dh, dh.DhanConfig), (sh, sh.ShoonyaConfig)])
 def test_in_broker_paper_cancel_order_simulated(mod, Config) -> None:
-    result = mod.cancel_order(Config(profile="paper"), "ORD1")
+    placed = mod.place_order(Config(profile="paper"), symbol="RELIANCE", side="buy", quantity=10)
+    result = mod.cancel_order(Config(profile="paper"), placed["order_id"])
     assert result["status"] == "ok"
     assert result["cancelled"] is True
     assert result["is_paper"] is True
+
+
+@pytest.mark.parametrize("mod, Config", [(dh, dh.DhanConfig), (sh, sh.ShoonyaConfig)])
+def test_in_broker_paper_cancel_refuses_an_order_it_never_issued(mod, Config) -> None:
+    """The paper profile reads the real account, so a live order id can reach
+    the simulated cancel; acknowledging it would report a cancel that never
+    happened while the real order keeps working."""
+    result = mod.cancel_order(Config(profile="paper"), "ORD1")
+    assert result["status"] == "error"
+    assert "cancelled" not in result
+    assert "not issued by this paper simulator" in result["error"]
 
 
 def test_in_broker_order_ops_classified_write() -> None:

@@ -67,7 +67,35 @@ def _get_session_service():
         runs_dir=runs_dir,
     )
     _set_host_attr("_session_service", _session_service)
+    _attach_delivery_listener(event_bus)
     return _session_service
+
+
+#: Terminal attempt events a finished scheduled briefing can follow.
+_DELIVERY_TRIGGER_EVENTS = frozenset(
+    {"attempt.completed", "attempt.failed", "attempt.cancelled"}
+)
+
+
+def _attach_delivery_listener(event_bus) -> None:
+    """Let a finished run push its briefing without waiting for the next tick.
+
+    The listener only *asks* for a sweep. Delivery correctness lives in the
+    periodic sweep and the persisted outbox row; this is latency, and it is
+    written so that failing to fire costs nothing but the wait.
+
+    Args:
+        event_bus: The session event bus to listen on.
+    """
+
+    def _on_event(event) -> None:
+        if event.event_type not in _DELIVERY_TRIGGER_EVENTS:
+            return
+        from src.api.scheduled_routes import _get_scheduled_research_executor
+
+        _get_scheduled_research_executor().request_sweep()
+
+    event_bus.add_listener(_on_event)
 
 
 def _get_channel_runtime():
@@ -108,3 +136,21 @@ def _get_channel_runtime():
     _set_host_attr("_channel_bus", _channel_bus)
     _set_host_attr("_channel_manager", _channel_manager)
     return _channel_runtime
+
+
+def reset_channel_runtime() -> None:
+    """Drop the cached IM channel runtime so the next access rebuilds from disk.
+
+    ``_get_channel_runtime`` caches its singletons in this module's globals
+    *and* on the ``api_server`` host attrs; clearing both — with ``None``,
+    which is what makes the next call rebuild — is what lets an edited channel
+    config apply without a process restart.
+    """
+    global _channel_runtime, _channel_bus, _channel_manager
+
+    _channel_runtime = None
+    _channel_bus = None
+    _channel_manager = None
+    _set_host_attr("_channel_runtime", None)
+    _set_host_attr("_channel_bus", None)
+    _set_host_attr("_channel_manager", None)

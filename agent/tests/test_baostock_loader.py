@@ -106,3 +106,45 @@ class TestFetchOneCodeHandling:
         loader._fetch_one(bs_mock, "000001.SZ", "2024-01-01", "2024-01-31")
         call_args = bs_mock.query_history_k_data_plus.call_args
         assert call_args[0][0] == "sz.000001"
+
+
+class TestVolumeUnitNormalization:
+    """BaoStock native shares are normalized to board lots (#1062)."""
+
+    def test_volume_shares_normalized_to_lots(self):
+        from unittest.mock import MagicMock
+        from backtest.loaders.baostock_loader import DataLoader
+
+        loader = DataLoader()
+        bs_mock = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_code = "0"
+        mock_rs.error_msg = "success"
+        mock_rs.next.side_effect = [True, False]
+        mock_rs.get_row_data.return_value = [
+            "2024-01-02", "10.0", "10.5", "9.8", "10.2", "5512800", "7400000000",
+        ]
+        bs_mock.query_history_k_data_plus.return_value = mock_rs
+
+        df = loader._fetch_one(bs_mock, "601398.SH", "2024-01-01", "2024-01-31")
+
+        assert df["volume"].iloc[-1] == 55128.0
+
+    def test_odd_lot_volume_keeps_fractional_lots(self):
+        from unittest.mock import MagicMock
+        from backtest.loaders.baostock_loader import DataLoader
+
+        loader = DataLoader()
+        bs_mock = MagicMock()
+        mock_rs = MagicMock()
+        mock_rs.error_code = "0"
+        mock_rs.error_msg = "success"
+        mock_rs.next.side_effect = [True, False]
+        mock_rs.get_row_data.return_value = [
+            "2024-01-02", "10.0", "10.5", "9.8", "10.2", "5512753", "7400000000",
+        ]
+        bs_mock.query_history_k_data_plus.return_value = mock_rs
+
+        df = loader._fetch_one(bs_mock, "601398.SH", "2024-01-01", "2024-01-31")
+
+        assert abs(df["volume"].iloc[-1] - 55127.53) < 1e-9

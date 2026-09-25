@@ -1,12 +1,14 @@
 import i18n from '@/i18n';
-import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useParams, useNavigate } from "react-router";
+import { useParams, useNavigate, useSearchParams } from "react-router";
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowLeftRight,
   BarChart3,
+  Braces,
+  CalendarRange,
   CheckCircle2,
   Code2,
   Copy,
@@ -14,27 +16,47 @@ import {
   Download,
   FileCheck2,
   Fingerprint,
+  Gauge,
   List,
+  LayoutDashboard,
   Loader2,
+  PieChart,
   ShieldCheck,
+  Sigma,
   XCircle,
   CircleSlash,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { api, type BacktestMetrics, type RunCard, type RunData, type ValidationData } from "@/lib/api";
+import { api, type BacktestMetrics, type EquityPoint, type FactorReportPayload, type RebalanceNotesPayload, type RiskXRayPayload, type RunCard, type RunData, type ValidationData } from "@/lib/api";
+import {
+  computeAnnualReturns,
+  computeMonthlyReturns,
+  computeTopDrawdowns,
+  normalizeEquitySeries,
+  toDrawdownZones,
+} from "@/lib/tearsheet";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import { AnnualReturnsChart } from "@/components/charts/AnnualReturnsChart";
 import { CandlestickChart } from "@/components/charts/CandlestickChart";
 import { EquityChart } from "@/components/charts/EquityChart";
+import { MonthlyReturnsHeatmap } from "@/components/charts/MonthlyReturnsHeatmap";
+import { TopDrawdownsPanel } from "@/components/charts/TopDrawdownsPanel";
 import { MetricsCard } from "@/components/chat/MetricsCard";
 import { ValidationPanel } from "@/components/charts/ValidationPanel";
 import { Skeleton, SkeletonMetrics, SkeletonChart } from "@/components/common/Skeleton";
 import { ErrorBoundary } from "@/components/common/ErrorBoundary";
+import { getStrategyReportIdentity, StrategyResearchDashboard } from "@/components/charts/StrategyResearchDashboard";
+import { FactorResearchPanel } from "@/components/charts/FactorResearchPanel";
+import { AttributionTab } from "@/components/charts/AttributionTab";
+import { PositionsTab } from "@/components/run/PositionsTab";
+import { RunCardPanel, RunCardStat, formatRunCardValue } from "@/components/run/RunCard";
+import { isDateColumn } from "@/lib/positions";
 
 const rehypePlugins = [rehypeHighlight];
 
-type Tab = "chart" | "trades" | "runCard" | "code" | "validation";
+type Tab = "dashboard" | "chart" | "tearsheet" | "trades" | "positions" | "attribution" | "runCard" | "code" | "validation" | "studio" | "factor";
 type ChartPayload = Pick<RunData, "price_series" | "indicator_series" | "trade_markers">;
 type ChartCache = Record<string, ChartPayload>;
 type ChartLoadProgress = { done: number; total: number };
@@ -96,11 +118,17 @@ function yieldToBrowser(): Promise<void> {
 
 export function RunDetail() {
   const { runId } = useParams<{ runId: string }>();
+  const [searchParams] = useSearchParams();
+  const requestedInitialTab: Tab = searchParams.get("view") === "dashboard" ? "dashboard" : "chart";
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [run, setRun] = useState<RunData | null>(null);
   const [code, setCode] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<Tab>("chart");
+  // The prompt header sits above the scrollable body (flex-1 min-h-0
+  // overflow-auto), so an unclamped multi-paragraph prompt eats most of the
+  // viewport and leaves almost no room for the tabs/dashboard below it.
+  const [promptExpanded, setPromptExpanded] = useState(false);
+  const [tab, setTab] = useState<Tab>(requestedInitialTab);
   const [loading, setLoading] = useState(true);
   const [selectedSymbol, setSelectedSymbol] = useState("");
   const [chartPickerSymbol, setChartPickerSymbol] = useState("");
@@ -115,9 +143,22 @@ export function RunDetail() {
 
   const hasValidation = !!run?.validation;
   const hasRunCard = !!run?.run_card;
+  const hasStudio = !!run?.risk_xray || !!run?.rebalance_notes;
+  const hasTearsheet = (run?.artifacts_equity_csv?.length ?? 0) > 0 || (run?.equity_curve?.length ?? 0) > 0;
+  const hasFactor = !!run?.has_factor_artifacts;
+  const hasAttribution = (run?.artifacts_equity_csv?.length ?? 0) > 0;
+  const hasPositions = !!run?.artifacts_positions_csv?.some(
+    (row) => Object.keys(row).some((key) => !isDateColumn(key)),
+  );
   const TABS: { id: Tab; label: string; icon: typeof BarChart3; hidden?: boolean }[] = [
+    { id: "dashboard", label: i18n.t("runDetail.dashboard"), icon: LayoutDashboard },
     { id: "chart", label: i18n.t("runDetail.chart"), icon: BarChart3 },
+    { id: "tearsheet", label: i18n.t("runDetail.tearsheet"), icon: CalendarRange, hidden: !hasTearsheet },
     { id: "trades", label: i18n.t("runDetail.trades"), icon: List },
+    { id: "positions", label: i18n.t("runDetail.positions.tab"), icon: PieChart, hidden: !hasPositions },
+    { id: "attribution", label: i18n.t("runDetail.attribution"), icon: ArrowLeftRight, hidden: !hasAttribution },
+    { id: "factor", label: i18n.t("runDetail.factor"), icon: Sigma, hidden: !hasFactor },
+    { id: "studio", label: i18n.t("runDetail.studio"), icon: Gauge, hidden: !hasStudio },
     { id: "validation", label: i18n.t("runDetail.validation"), icon: ShieldCheck, hidden: !hasValidation },
     { id: "runCard", label: i18n.t("runDetail.runCard"), icon: FileCheck2, hidden: !hasRunCard },
     { id: "code", label: i18n.t("runDetail.code"), icon: Code2 },
@@ -128,7 +169,8 @@ export function RunDetail() {
     cancelBulkChartLoadRef.current = true;
     setRun(null);
     setCode({});
-    setTab("chart");
+    setPromptExpanded(false);
+    setTab(requestedInitialTab);
     setLoading(true);
     setSelectedSymbol("");
     setChartPickerSymbol("");
@@ -170,7 +212,7 @@ export function RunDetail() {
       cancelBulkChartLoadRef.current = true;
       if (runGenerationRef.current === generation) runGenerationRef.current += 1;
     };
-  }, [runId]);
+  }, [runId, requestedInitialTab]);
 
   if (loading) {
     return (
@@ -198,6 +240,7 @@ export function RunDetail() {
 
   const ok = run.status === "success";
   const cancelled = run.status === "cancelled";
+  const reportIdentity = getStrategyReportIdentity(run);
 
   async function loadChartSymbol(
     symbol: string,
@@ -314,10 +357,34 @@ export function RunDetail() {
               <span className="sr-only">{t("swarm.status.failed")}</span>
             </>
           )}
-          <h1 className="font-mono text-2xl font-semibold">{runId}</h1>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-xl font-semibold tracking-tight">{reportIdentity.title}</h1>
+              {reportIdentity.strategyInferred && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-[#ff8a3d]/30 bg-[#ff8a3d]/10 px-2 py-0.5 text-[11px] text-[#c25a14]">
+                  {t("runDashboard.strategyInferred")}
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">RUN {runId}</p>
+          </div>
           {run.elapsed_seconds && <span className="text-xs text-muted-foreground">{run.elapsed_seconds.toFixed(1)}s</span>}
         </div>
-        {run.prompt && <p className="text-sm text-muted-foreground">{run.prompt}</p>}
+        {run.prompt && (
+          <div>
+            <p className={cn("text-sm text-muted-foreground whitespace-pre-wrap", !promptExpanded && "line-clamp-3")}>
+              {run.prompt}
+            </p>
+            <button
+              type="button"
+              aria-expanded={promptExpanded}
+              onClick={() => setPromptExpanded((v) => !v)}
+              className="mt-1 text-xs text-primary hover:underline"
+            >
+              {promptExpanded ? t("runDetail.showLessPrompt") : t("runDetail.showFullPrompt")}
+            </button>
+          </div>
+        )}
         {run.metrics && <MetricsCard metrics={run.metrics as Record<string, number>} />}
 
         <div className="flex flex-wrap items-center gap-1">
@@ -363,6 +430,7 @@ export function RunDetail() {
 
       <div className="flex-1 overflow-auto">
         <ErrorBoundary>
+          {tab === "dashboard" && <div className="p-4"><StrategyResearchDashboard run={run} /></div>}
           {tab === "chart" && (
             <ChartTab
               run={run}
@@ -380,8 +448,15 @@ export function RunDetail() {
               onCancelLoadAll={handleCancelLoadAllCharts}
             />
           )}
+          {tab === "tearsheet" && hasTearsheet && <TearsheetTab run={run} />}
           {tab === "trades" && <TradesTab run={run} />}
+          {tab === "positions" && hasPositions && <PositionsTab run={run} />}
+          {tab === "attribution" && hasAttribution && runId && <AttributionTab runId={runId} run={run} />}
+          {tab === "factor" && run.has_factor_artifacts && runId && <FactorTab runId={runId} />}
           {tab === "validation" && run.validation && <ValidationPanel data={run.validation} />}
+          {tab === "studio" && hasStudio && (
+            <StudioTab xray={run.risk_xray} notes={run.rebalance_notes} />
+          )}
           {tab === "runCard" && run.run_card && <RunCardTab card={run.run_card} />}
           {tab === "code" && <CodeTab code={code} />}
         </ErrorBoundary>
@@ -394,6 +469,11 @@ function RunCardTab({ card }: { card: RunCard }) {
   const backtest = card.backtest || {};
   const reproducibility = card.reproducibility || {};
   const metrics = card.metrics || {};
+  // Rendered as JSON: a dict or list value would otherwise collapse - an empty
+  // list formats as a blank cell, which reads as "missing" rather than "none".
+  const structuredMetrics = Object.fromEntries(
+    Object.entries(card.structured_metrics || {}).map(([key, value]) => [key, JSON.stringify(value)]),
+  );
   const artifacts = card.artifacts || [];
   const warnings = card.warnings || [];
   const dataSources = card.data_sources || [];
@@ -447,6 +527,10 @@ function RunCardTab({ card }: { card: RunCard }) {
         </RunCardPanel>
       </div>
 
+      <RunCardPanel title={i18n.t("runDetail.structuredMetrics")} icon={Braces}>
+        <KeyValueTable data={structuredMetrics} empty={i18n.t("runDetail.noStructuredMetrics")} monospaceValues />
+      </RunCardPanel>
+
       <RunCardPanel title={i18n.t("runDetail.artifactChecksums")} icon={FileCheck2}>
         {artifacts.length > 0 ? (
           <div className="overflow-x-auto">
@@ -477,24 +561,194 @@ function RunCardTab({ card }: { card: RunCard }) {
   );
 }
 
-function RunCardStat({ label, value, tone = "normal" }: { label: string; value: string; tone?: "normal" | "warning" }) {
+function fmtPct(v: number | undefined, digits = 1): string {
+  if (v === undefined || Number.isNaN(v)) return "-";
+  return `${(v * 100).toFixed(digits)}%`;
+}
+
+function StudioTab({ xray, notes }: { xray?: RiskXRayPayload; notes?: RebalanceNotesPayload }) {
+  const concentration = xray?.concentration || {};
+  const volatility = xray?.volatility || {};
+  const drawdown = xray?.drawdown || {};
+  const weights = xray?.inputs?.weights || {};
+  const weightEntries = Object.entries(weights).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  const summary = notes?.summary;
+  const rebalances = notes?.rebalances || [];
+
   return (
-    <div className="rounded-xl border border-border/60 bg-card p-4 shadow-sm">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={cn("mt-1 truncate text-sm font-medium", tone === "warning" ? "text-warning" : "")}>{value}</div>
+    <div className="space-y-4">
+      {xray && (
+        <RunCardPanel title={i18n.t("runDetail.riskXray")} icon={Gauge}>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <RunCardStat label={i18n.t("runDetail.hhi")} value={concentration.hhi !== undefined ? concentration.hhi.toFixed(3) : "-"} />
+            <RunCardStat label={i18n.t("runDetail.effectiveN")} value={concentration.effective_n !== undefined ? concentration.effective_n.toFixed(1) : "-"} />
+            <RunCardStat label={i18n.t("runDetail.annualizedVol")} value={fmtPct(volatility.annualized_vol)} />
+            <RunCardStat label={i18n.t("runDetail.maxDrawdown")} value={fmtPct(drawdown.max_drawdown)} />
+          </div>
+          {weightEntries.length > 0 && (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground [&_th]:font-medium">
+                    <th className="py-2 ps-4 pr-4">{i18n.t("runDetail.symbol")}</th>
+                    <th className="py-2 pr-4">{i18n.t("runDetail.weight")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {weightEntries.map(([sym, w]) => (
+                    <tr key={sym} className="border-b last:border-0 hover:bg-muted/40">
+                      <td className="py-1.5 ps-4 pr-4 font-mono text-xs">{sym}</td>
+                      <td className="py-1.5 pr-4 font-mono tabular-nums">{fmtPct(w)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {(xray.warnings || []).length > 0 && (
+            <p className="mt-2 text-xs text-warning">{(xray.warnings || []).join("; ")}</p>
+          )}
+        </RunCardPanel>
+      )}
+
+      {notes && summary && (
+        <RunCardPanel title={i18n.t("runDetail.rebalanceNotes")} icon={Gauge}>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <RunCardStat label={i18n.t("runDetail.rebalanceCount")} value={String(summary.target_change_count ?? summary.rebalance_count ?? 0)} />
+            <RunCardStat label={i18n.t("runDetail.rebalanceExecuted")} value={String(summary.rebalance_executed_fills ?? "-")} />
+            <RunCardStat label={i18n.t("runDetail.rebalanceRealizedTurnover")} value={fmtPct(summary.rebalance_realized_turnover ?? 0)} />
+            <RunCardStat label={i18n.t("runDetail.turnoverMean")} value={fmtPct(summary.turnover_mean)} />
+            <RunCardStat label={i18n.t("runDetail.turnoverMax")} value={fmtPct(summary.turnover_max)} />
+            <RunCardStat label={i18n.t("runDetail.largestRebalance")} value={summary.largest_rebalance_date || "-"} />
+          </div>
+          {rebalances.length > 0 && (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40 text-left text-[11px] uppercase tracking-wide text-muted-foreground [&_th]:font-medium">
+                    <th className="py-2 ps-4 pr-4">{i18n.t("runDetail.date")}</th>
+                    <th className="py-2 pr-4">{i18n.t("runDetail.turnover")}</th>
+                    <th className="py-2 pr-4">{i18n.t("runDetail.entries")}</th>
+                    <th className="py-2">{i18n.t("runDetail.exits")}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rebalances.map((r) => (
+                    <tr key={r.date} className="border-b last:border-0 hover:bg-muted/40">
+                      <td className="py-1.5 ps-4 pr-4 font-mono text-xs">{r.date}</td>
+                      <td className="py-1.5 pr-4 font-mono tabular-nums">{fmtPct(r.turnover)}</td>
+                      <td className="py-1.5 pr-4 text-xs">{(r.entries || []).map((e) => e.code).join(", ") || "-"}</td>
+                      <td className="py-1.5 text-xs">{(r.exits || []).map((e) => e.code).join(", ") || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </RunCardPanel>
+      )}
     </div>
   );
 }
 
-function RunCardPanel({ title, icon: Icon, children }: { title: string; icon: typeof FileCheck2; children: ReactNode }) {
+function TearsheetTab({ run }: { run: RunData }) {
+  const equityPoints = useMemo(
+    () => normalizeEquitySeries(run.artifacts_equity_csv ?? run.equity_curve),
+    [run.artifacts_equity_csv, run.equity_curve],
+  );
+  const monthly = useMemo(() => computeMonthlyReturns(equityPoints), [equityPoints]);
+  const annual = useMemo(() => computeAnnualReturns(equityPoints), [equityPoints]);
+  const drawdowns = useMemo(() => computeTopDrawdowns(equityPoints, 5), [equityPoints]);
+  const zones = useMemo(() => {
+    const lastTime = equityPoints.length > 0 ? equityPoints[equityPoints.length - 1].time : "";
+    return toDrawdownZones(drawdowns, lastTime);
+  }, [drawdowns, equityPoints]);
+  const chartData = useMemo<EquityPoint[]>(
+    () => equityPoints.map((p) => ({ time: p.time, equity: p.equity, drawdown: p.drawdown })),
+    [equityPoints],
+  );
+
+  if (equityPoints.length < 2) {
+    return <div className="p-8 text-muted-foreground text-sm">{i18n.t("runDetail.noTearsheetData")}</div>;
+  }
+
+  const yearCount = new Set(monthly.map((m) => m.year)).size;
+  const heatmapHeight = Math.min(420, Math.max(200, 40 + 34 * yearCount));
+
   return (
-    <section className="rounded-xl border border-border/60 bg-card p-4 shadow-sm">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        {title}
+    <div className="p-4 space-y-4">
+      <RunCardPanel title={i18n.t("runDetail.equityDrawdown")} icon={BarChart3}>
+        <EquityChart data={chartData} drawdownZones={zones} height={300} />
+      </RunCardPanel>
+      <RunCardPanel title={i18n.t("runDetail.monthlyReturns")} icon={CalendarRange}>
+        <MonthlyReturnsHeatmap data={monthly} annual={annual} height={heatmapHeight} />
+      </RunCardPanel>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <RunCardPanel title={i18n.t("runDetail.annualReturns")} icon={BarChart3}>
+          <AnnualReturnsChart data={annual} height={260} />
+        </RunCardPanel>
+        <RunCardPanel title={i18n.t("runDetail.topDrawdowns")} icon={AlertTriangle}>
+          <TopDrawdownsPanel episodes={drawdowns} />
+        </RunCardPanel>
       </div>
-      {children}
-    </section>
+    </div>
+  );
+}
+
+function FactorTab({ runId }: { runId: string }) {
+  const [data, setData] = useState<FactorReportPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const generationRef = useRef(0);
+
+  useEffect(() => {
+    const generation = ++generationRef.current;
+    setLoading(true);
+    setError("");
+    setData(null);
+    api.getRunFactor(runId)
+      .then((payload) => {
+        if (generationRef.current !== generation) return;
+        setData(payload);
+      })
+      .catch((err: unknown) => {
+        if (generationRef.current !== generation) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (generationRef.current === generation) setLoading(false);
+      });
+    return () => {
+      if (generationRef.current === generation) generationRef.current += 1;
+    };
+  }, [runId]);
+
+  if (loading) {
+    return (
+      <div className="p-4 space-y-4">
+        <Skeleton className="h-6 w-48" />
+        <p className="text-xs text-muted-foreground">{i18n.t("factor.loading")}</p>
+        <SkeletonMetrics />
+        <SkeletonChart height={320} />
+        <SkeletonChart height={320} />
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="p-8 space-y-1">
+        <p className="text-sm font-medium text-danger">{i18n.t("factor.error")}</p>
+        <p className="text-xs text-muted-foreground">{error}</p>
+      </div>
+    );
+  }
+  if (!data || !data.exists || data.factors.length === 0) {
+    return <div className="p-8 text-muted-foreground text-sm">{i18n.t("factor.noFactorData")}</div>;
+  }
+  return (
+    <div className="p-4">
+      <FactorResearchPanel report={data} />
+    </div>
   );
 }
 
@@ -509,7 +763,7 @@ function KeyValueTable({ data, empty, monospaceValues = false }: { data: Record<
         <tbody>
           {entries.map(([key, value]) => (
             <tr key={key} className="border-b last:border-0 hover:bg-muted/40">
-              <td className="w-36 py-2 ps-4 pr-4 align-top text-muted-foreground">{key}</td>
+              <td className="w-36 break-all py-2 ps-4 pr-4 align-top text-muted-foreground">{key}</td>
               <td className={cn("py-2 align-top", monospaceValues ? "break-all font-mono text-xs" : "break-words text-right tabular-nums")}>{formatRunCardValue(value)}</td>
             </tr>
           ))}
@@ -523,13 +777,6 @@ function hasStructuredValidation(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
   return Boolean(v.monte_carlo || v.bootstrap || v.walk_forward);
-}
-
-function formatRunCardValue(value: unknown): string {
-  if (Array.isArray(value)) return value.join(", ");
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4);
-  if (typeof value === "object" && value !== null) return JSON.stringify(value);
-  return String(value ?? "");
 }
 
 function formatBytes(value: number): string {

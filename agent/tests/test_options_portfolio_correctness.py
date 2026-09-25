@@ -60,6 +60,18 @@ def test_non_finite_final_equity_is_json_safe(terminal: float) -> None:
     json.dumps(metrics, allow_nan=False)
 
 
+def test_annual_return_exponent_uses_elapsed_bars_not_bars_minus_one() -> None:
+    """annual_return must annualise over len(equity) elapsed bars, matching
+    backtest.metrics.calc_metrics's convention, not len(equity) - 1."""
+    equity = pd.Series([100.5, 101.0])
+    metrics = _calc_options_metrics(equity, 100.0, [], bars_per_year=252)
+
+    total_ret = equity.iloc[-1] / 100.0 - 1
+    expected = (1 + total_ret) ** (252 / len(equity)) - 1
+
+    assert metrics["annual_return"] == pytest.approx(expected)
+
+
 def test_normal_positive_equity_metrics_remain_finite() -> None:
     metrics = _calc_options_metrics(
         pd.Series([100.0, 110.0, 104.5, 115.0, 103.5, 120.0]),
@@ -131,4 +143,37 @@ def test_all_numeric_trade_pnl_emits_no_ignored_warning() -> None:
     trades = [{"pnl": 100.0}, {"pnl": -50.0}, {"pnl": 0.0}]
     metrics = _calc_options_metrics(pd.Series([100.0, 150.0]), 100.0, trades)
     assert not any("Ignored PnL" in w for w in metrics["warnings"])
+    json.dumps(metrics, allow_nan=False)
+
+
+def test_bars_per_year_none_does_not_crash() -> None:
+    # The runner passes bars_per_year=None for cross-market baskets
+    # (calendar-day convention). All three guards used to raise
+    # TypeError ('<=' / '>' not supported between NoneType and int).
+    # Zigzag path with multiple downside observations so the sortino guard
+    # is reached (a single negative return yields an undefined downside std,
+    # unrelated to the None bug under test).
+    equity = pd.Series(
+        [100.0, 90.0, 95.0, 85.0, 92.0, 80.0],
+        index=pd.date_range("2026-01-01", periods=6, freq="D"),
+    )
+    metrics = _calc_options_metrics(equity, 100.0, [], bars_per_year=None)
+
+    assert metrics["sharpe"] is not None
+    assert metrics["sortino"] is not None
+    assert metrics["annual_return"] is not None
+    assert not any(
+        "positive bars_per_year" in w or "bars_per_year" in w for w in metrics["warnings"]
+    )
+    json.dumps(metrics, allow_nan=False)
+
+
+def test_bars_per_year_none_on_degenerate_span_falls_back_to_default() -> None:
+    # A one-bar equity curve has no calendar span to derive from; it must
+    # fall back to the default factor instead of raising.
+    equity = pd.Series(
+        [99.0], index=pd.date_range("2026-01-01", periods=1, freq="D")
+    )
+    metrics = _calc_options_metrics(equity, 100.0, [], bars_per_year=None)
+    assert metrics["final_value"] == 99.0
     json.dumps(metrics, allow_nan=False)

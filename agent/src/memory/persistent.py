@@ -115,7 +115,11 @@ _NON_LATIN_SCRIPT_RANGES = (
     "Ѐ-ӿ"  # Cyrillic
 )
 
-_TOKEN_RE = re.compile(rf"[a-zA-Z0-9]{{3,}}|[{_NON_LATIN_SCRIPT_RANGES}]")
+# Matches search_index.py's FTS5 query sanitizer minimum (2+ ASCII chars) so
+# the token-scan fallback in find_relevant() finds the same content the FTS5
+# path does — short tokens like ticker symbols ("GE") or country codes ("US")
+# must be retrievable regardless of whether VT_MEMORY_FTS_INDEX is enabled.
+_TOKEN_RE = re.compile(rf"[a-zA-Z0-9]{{2,}}|[{_NON_LATIN_SCRIPT_RANGES}]")
 _SLUG_DISALLOWED_RE = re.compile(rf"[^a-z0-9_\-{_NON_LATIN_SCRIPT_RANGES}]")
 
 
@@ -143,7 +147,7 @@ class MemoryEntry:
 
 
 def _tokenize(text: str) -> set[str]:
-    """Split text into searchable tokens (ASCII >=3 chars + non-Latin chars)."""
+    """Split text into searchable tokens (ASCII >=2 chars + non-Latin chars)."""
     return set(_TOKEN_RE.findall(text.lower()))
 
 
@@ -386,8 +390,21 @@ class PersistentMemory:
                     if all_entries is None:
                         all_entries = self._scan_entries()
                     entry_map = {e.id: e for e in all_entries}
-                    fts_results = [entry_map[m.entry_id] for m in matches if m.entry_id in entry_map]
-                    if fts_results:
+                    fts_pairs = [
+                        (m, entry_map[m.entry_id]) for m in matches if m.entry_id in entry_map
+                    ]
+                    if fts_pairs:
+                        if _is_decay_enabled():
+                            # FTS5's rank is more negative for stronger matches;
+                            # negate it onto the same scale the token-scan
+                            # fallback below uses and apply the same importance
+                            # weighting, so decay isn't silently inert whenever
+                            # FTS produces a result.
+                            fts_pairs.sort(
+                                key=lambda pair: -pair[0].rank * (0.5 + 0.5 * pair[1].importance),
+                                reverse=True,
+                            )
+                        fts_results = [entry for _, entry in fts_pairs]
                         return fts_results[:max_results]
             except Exception:
                 logger.debug("FTS5 search failed, falling back to scan", exc_info=True)
@@ -421,16 +438,31 @@ class PersistentMemory:
                 linker = SemanticLinker(self._dir)
                 all_entries = self._scan_entries()
                 linked_ids: set[str] = set()
+                linked_paths: set[str] = set()
                 for r in results:
                     relations = linker.load_relations(r.path)
                     for target_file, _score in relations:
-                        linked_ids.add(Path(target_file).stem)
+                        # A target written since the hierarchy fix is the path
+                        # relative to the memory dir; older sidecars hold a
+                        # bare filename or an absolute path, and a bare one can
+                        # only ever be matched by stem.
+                        if "/" in target_file or "\\" in target_file:
+                            linked_paths.add(Path(target_file).as_posix())
+                        else:
+                            linked_ids.add(Path(target_file).stem)
                 # Add linked entries not already in results
                 result_paths = {r.path for r in results}
                 for entry in all_entries:
                     if len(results) >= max_results:
                         break
-                    if entry.path.stem in linked_ids and entry.path not in result_paths:
+                    if entry.path in result_paths:
+                        continue
+                    relative = entry.path.relative_to(self._dir).as_posix()
+                    if (
+                        relative in linked_paths
+                        or entry.path.as_posix() in linked_paths
+                        or entry.path.stem in linked_ids
+                    ):
                         results.append(entry)
             except Exception:
                 logger.debug("semantic link expansion failed", exc_info=True)
@@ -490,7 +522,14 @@ class PersistentMemory:
         if get_env_config().memory.hierarchy_enabled:
             from src.memory.hierarchy import MemoryHierarchy
             hierarchy = MemoryHierarchy(self._dir)
-            path = hierarchy.route_entry(memory_type, slug)
+            # route_entry() treats its second argument as the leaf filename
+            # verbatim, so the ".md" has to be here: a bare slug wrote entries
+            # with no suffix, and every scan filters on suffix == ".md", which
+            # made them invisible to list_entries() and find(). The category
+            # directory already carries the type, and the name must match what
+            # recover_extensionless_entries() renames orphans to, or the same
+            # entry ends up on disk twice.
+            path = hierarchy.route_entry(memory_type, f"{slug}.md")
         else:
             filename = f"{memory_type}_{slug}.md"
             path = self._dir / filename
@@ -527,7 +566,15 @@ class PersistentMemory:
                     "add(%s): lock timeout, best-effort write", stripped_name
                 )
             path.write_text(frontmatter, encoding="utf-8")
-            self._update_index(stripped_name, path.name, description or stripped_name)
+            # path.relative_to(self._dir), not path.name: under
+            # VT_MEMORY_HIERARCHY the file lives at
+            # "{memory_type}/{slug}.md", so path.name alone is just
+            # "{slug}.md" -- identical for two entries sharing a title but
+            # different memory_type. That collapsed _update_index's match
+            # key, so the second add() silently overwrote the first
+            # entry's row instead of keeping both, per #1525's intent.
+            index_key = path.relative_to(self._dir).as_posix()
+            self._update_index(stripped_name, index_key, description or stripped_name)
 
             if get_env_config().memory.links_enabled:
                 try:
@@ -539,14 +586,22 @@ class PersistentMemory:
                         entry_tokens = _tokenize_for_bm25(
                             f"{new_entry.title} {new_entry.description} {new_entry.body}"
                         )
+                        # Same key as the index row above, for the same
+                        # reason: under hierarchy mode two entries sharing a
+                        # title have the same path.name, so keying the link
+                        # graph by it made discover_links() drop the OTHER
+                        # entry as "self" and mint an ambiguous target.
                         all_entries_data = [
-                            (e.path.name, _tokenize_for_bm25(
-                                f"{e.title} {e.description} {e.body}"
-                            ))
+                            (e.path.relative_to(self._dir).as_posix(),
+                             _tokenize_for_bm25(
+                                 f"{e.title} {e.description} {e.body}"
+                             ))
                             for e in all_entries if e.path != path
                         ]
                         links = linker.discover_links(
-                            entry_title=new_entry.path.name,
+                            entry_title=new_entry.path.relative_to(
+                                self._dir
+                            ).as_posix(),
                             entry_tokens=entry_tokens,
                             all_entries_data=all_entries_data,
                         )
@@ -570,34 +625,58 @@ class PersistentMemory:
                     logger.debug("FTS5 index_entry failed", exc_info=True)
         return path
 
-    def remove(self, name: str) -> bool:
-        """Remove a memory entry by name. Returns True if found and removed."""
+    def remove(self, name: str, memory_type: str | None = None) -> bool:
+        """Remove a memory entry by name.
+
+        One title can exist under several memory types, each in its own file
+        (``{memory_type}_{slug}.md``, #1525), so a bare title can be ambiguous.
+
+        Args:
+            name: Title of the entry to remove.
+            memory_type: The entry's type; needed only when the title exists
+                under more than one type.
+
+        Returns:
+            True if an entry was found and removed, False if none matched.
+
+        Raises:
+            ValueError: The title exists under several types and ``memory_type``
+                was not given.
+        """
         from src.config.accessor import get_env_config
 
-        for entry in self._scan_entries():
-            if entry.title == name:
-                with memory_lock(self._dir) as acquired:
-                    if not acquired:
-                        logger.warning("remove(%s): lock timeout", name)
-                    entry.path.unlink(missing_ok=True)
-                    self._rebuild_index()
+        matches = [
+            entry
+            for entry in self._scan_entries()
+            if entry.title == name and (memory_type is None or entry.memory_type == memory_type)
+        ]
+        if not matches:
+            return False
+        if len(matches) > 1:
+            types = ", ".join(sorted(entry.memory_type for entry in matches))
+            raise ValueError(f"memory {name!r} exists as {types}; name the memory_type to remove")
+        entry = matches[0]
+        with memory_lock(self._dir) as acquired:
+            if not acquired:
+                logger.warning("remove(%s): lock timeout", name)
+            entry.path.unlink(missing_ok=True)
+            self._rebuild_index()
 
-                if get_env_config().memory.fts_index_enabled:
-                    try:
-                        from src.memory.search_index import get_shared_index
-                        get_shared_index().remove_entry(entry.id)
-                    except Exception:
-                        logger.debug("FTS5 remove_entry failed", exc_info=True)
+        if get_env_config().memory.fts_index_enabled:
+            try:
+                from src.memory.search_index import get_shared_index
+                get_shared_index().remove_entry(entry.id)
+            except Exception:
+                logger.debug("FTS5 remove_entry failed", exc_info=True)
 
-                if get_env_config().memory.links_enabled:
-                    try:
-                        from src.memory.semantic_links import SemanticLinker
-                        SemanticLinker(self._dir).remove_relations(entry.path)
-                    except Exception:
-                        logger.debug("Failed to remove relations for %s", entry.path, exc_info=True)
+        if get_env_config().memory.links_enabled:
+            try:
+                from src.memory.semantic_links import SemanticLinker
+                SemanticLinker(self._dir).remove_relations(entry.path)
+            except Exception:
+                logger.debug("Failed to remove relations for %s", entry.path, exc_info=True)
 
-                return True
-        return False
+        return True
 
     def _update_index(self, title: str, filename: str, description: str) -> None:
         """Append or update an entry in MEMORY.md."""
@@ -606,7 +685,12 @@ class PersistentMemory:
         if self._index_path.exists():
             lines = self._index_path.read_text(encoding="utf-8").split("\n")
             updated = False
-            target_prefix = f"- [{title}]("
+            # Match on the filename, not just the title: two different
+            # memory_types produce two different files for the same title
+            # (add() names the file "{memory_type}_{slug}.md"), and matching
+            # on title alone made the second add() silently clobber the
+            # first entry's index row even though both files exist on disk.
+            target_prefix = f"- [{title}]({filename})"
             for i, line in enumerate(lines):
                 if line.startswith(target_prefix):
                     lines[i] = new_line
@@ -623,7 +707,10 @@ class PersistentMemory:
     def _rebuild_index(self) -> None:
         """Rebuild MEMORY.md from all existing entry files."""
         entries = self._scan_entries()
-        lines = [f"- [{e.title}]({e.path.name}) — {e.description}" for e in entries]
+        lines = [
+            f"- [{e.title}]({e.path.relative_to(self._dir).as_posix()}) — {e.description}"
+            for e in entries
+        ]
         self._index_path.write_text(
             "\n".join(lines[:MAX_INDEX_LINES]), encoding="utf-8"
         )

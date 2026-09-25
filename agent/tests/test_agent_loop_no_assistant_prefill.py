@@ -44,6 +44,8 @@ class _StubLLM:
         tools: Any = None,
         on_text_chunk: Any = None,
         on_reasoning_chunk: Any = None,
+        timeout: Any = None,
+        idle_timeout_s: Any = None,
         should_cancel: Any = None,
     ) -> Any:
         messages = [m for m in messages]

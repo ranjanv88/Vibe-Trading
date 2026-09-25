@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict
+from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request, status  # noqa: F401
 from fastapi.responses import FileResponse  # noqa: F401
@@ -164,8 +164,9 @@ app = FastAPI(
     title="Vibe-Trading API",
     description="Vibe-Trading API: natural-language finance research, backtesting, and swarm workflows",
     version=APP_VERSION,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url=None,  # docs/redoc/openapi re-registered behind require_auth
+    redoc_url=None,  # in register_system_routes -- see the rationale there
+    openapi_url=None,
     lifespan=_lifespan,
 )
 
@@ -192,6 +193,8 @@ from src.api.runs_routes import (  # noqa: F401, E402
     _load_csv_to_dict,
     _build_response_from_run_dir,
 )
+from src.api.attribution_routes import register_attribution_routes  # noqa: E402
+register_attribution_routes(app)
 
 # --- Sessions ---
 from src.api.sessions_routes import register_sessions_routes  # noqa: E402
@@ -234,6 +237,8 @@ from src.api.uploads_routes import (  # noqa: F401, E402
 # --- Channels ---
 from src.api.channels_routes import register_channels_routes  # noqa: E402
 register_channels_routes(app)
+from src.api.channels_config_routes import register_channels_config_routes  # noqa: E402
+register_channels_config_routes(app)
 from src.api.qveris_routes import qveris_router  # noqa: E402  # QVERIS-INTEGRATION
 app.include_router(qveris_router)  # QVERIS-INTEGRATION
 
@@ -251,6 +256,13 @@ from src.api.swarm_routes import _get_swarm_runtime  # noqa: F401, E402
 from src.api.live_routes import register_live_routes  # noqa: E402
 register_live_routes(app)
 
+# --- Read-only portfolio dashboard ---
+from src.api.portfolio_routes import register_portfolio_routes  # noqa: E402
+register_portfolio_routes(app)
+
+from src.api.connection_routes import register_connection_routes  # noqa: E402
+register_connection_routes(app)
+
 from src.api.live_routes import (  # noqa: F401, E402
     CommitMandateRequest,
     LiveHaltRequest,
@@ -267,6 +279,8 @@ from src.api.live_routes import (  # noqa: F401, E402
     _runner_factory,
     _emit_live_event,
     _fetch_broker_ceilings,
+    _live_account_choices,
+    _mandate_account_ref,
     _known_live_brokers,
     _oauth_token_present,
     _active_mandate_state,
@@ -282,6 +296,10 @@ from src.api.live_routes import (  # noqa: F401, E402
 from src.api.alpha_routes import register_alpha_routes  # noqa: E402
 register_alpha_routes(app)
 
+# --- Options analysis ---
+from src.api.options_routes import register_options_routes  # noqa: E402
+register_options_routes(app)
+
 # --- Auth helpers (SSE tickets) ---
 from src.api.auth_routes import register_auth_routes  # noqa: E402
 register_auth_routes(app)
@@ -291,20 +309,14 @@ register_auth_routes(app)
 from src.openbb_bridge import try_register_openbb_routes  # noqa: E402  # OPENBB-WORKSPACE-INTEGRATION
 try_register_openbb_routes(app)
 
-
-# ============================================================================
-# Scheduled Research Routes - defined in src/api/scheduled_routes.py
-# ============================================================================
-#
-# Lightweight CRUD endpoints backed by ScheduledResearchJobStore. The endpoint
-# handlers only record and expose jobs; the optional executor lifecycle is
-# guarded separately by VIBE_TRADING_ENABLE_SCHEDULER.
-
+# --- Scheduled research ---
 from src.api.scheduled_routes import register_scheduled_routes  # noqa: E402
 register_scheduled_routes(app)
 
 from src.api.scheduled_routes import (  # noqa: E402, F401
+    CreateRunFromPlaybookRequest,
     CreateScheduledRunRequest,
+    PlaybookResponse,
     ScheduledRunResponse,
     _dispatch_scheduled_research_job,
     _get_scheduled_research_executor,
@@ -322,19 +334,7 @@ def serve_main(argv: list[str] | None = None) -> int:
     import argparse
     import subprocess
     import uvicorn
-    from fastapi.staticfiles import StaticFiles
-    from starlette.exceptions import HTTPException as StarletteHTTPException
-
-    class SPAStaticFiles(StaticFiles):
-        """Serve index.html for browser refreshes on client-side routes."""
-
-        async def get_response(self, path: str, scope: Dict[str, Any]):
-            try:
-                return await super().get_response(path, scope)
-            except StarletteHTTPException as exc:
-                if exc.status_code != status.HTTP_404_NOT_FOUND:
-                    raise
-                return await super().get_response("index.html", scope)
+    from src.api.spa import SPAStaticFiles
 
     parser = argparse.ArgumentParser(description="Vibe-Trading Server")
     parser.add_argument("--port", type=int, default=8000, help="Listen port (default 8000)")

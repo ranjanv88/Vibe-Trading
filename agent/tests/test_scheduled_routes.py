@@ -174,6 +174,7 @@ def test_delete_removes_job_and_returns_204(
 
     assert response.status_code == 204
     assert not response.content
+    assert "content-type" not in response.headers
     assert store.get("cancel-me") is None
 
 
@@ -320,3 +321,133 @@ def test_create_interval_with_timezone_keeps_immediate_first_fire(
 
     assert response.status_code == 201
     assert before <= response.json()["next_run_at"] <= after
+
+
+def test_create_rejects_ids_the_delete_route_would_refuse(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    for bad_id in ("my scan.v1", "a/b", "café", "x" * 129):
+        response = client.post(
+            "/scheduled-runs",
+            json={"id": bad_id, "prompt": "scan", "schedule": "60000"},
+        )
+        assert response.status_code == 422, bad_id
+        assert "job id" in response.json()["detail"]
+        assert store.get(bad_id) is None
+
+
+def test_created_job_is_always_deletable(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    created = client.post(
+        "/scheduled-runs",
+        json={"prompt": "scan", "schedule": "60000"},
+    )
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+
+    assert client.delete(f"/scheduled-runs/{job_id}").status_code == 204
+    assert store.get(job_id) is None
+
+
+def test_create_accepts_ids_within_the_id_rule(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    for good_id in ("daily-scan", "scan_2026", "A" * 128):
+        response = client.post(
+            "/scheduled-runs",
+            json={"id": good_id, "prompt": "scan", "schedule": "60000"},
+        )
+        assert response.status_code == 201, good_id
+        assert client.delete(f"/scheduled-runs/{good_id}").status_code == 204
+def test_create_interval_accepts_a_timezone_it_will_never_use(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    # The composer attaches the browser zone to every create. An interval
+    # schedule ignores it, and the executor never resolves it, so a key this
+    # host cannot resolve must not block the create.
+    response = client.post(
+        "/scheduled-runs",
+        json={
+            "id": "interval-unknown-zone",
+            "prompt": "scan",
+            "schedule": "60000",
+            "timezone": "Mars/Olympus_Mons",
+        },
+    )
+
+    assert response.status_code == 201
+    saved = store.get("interval-unknown-zone")
+    assert saved is not None
+    assert saved.timezone == "Mars/Olympus_Mons"
+
+
+def test_create_cron_still_rejects_an_unresolvable_timezone(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    response = client.post(
+        "/scheduled-runs",
+        json={
+            "id": "cron-unknown-zone",
+            "prompt": "scan",
+            "schedule": "0 9 * * *",
+            "timezone": "Mars/Olympus_Mons",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "IANA timezone" in response.json()["detail"]
+    assert store.get("cron-unknown-zone") is None
+
+
+def test_create_rejects_a_blank_timezone_for_both_schedule_forms(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    for schedule in ("60000", "0 9 * * *"):
+        response = client.post(
+            "/scheduled-runs",
+            json={"prompt": "scan", "schedule": schedule, "timezone": "   "},
+        )
+        assert response.status_code == 422, schedule
+
+
+def test_list_carries_the_last_verdict_record(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    from src.scheduled_research.verdict import VerdictItem, VerdictRecord
+
+    verdict = VerdictRecord(
+        session_id="sess-9",
+        recorded_at=1_700_000_100_000,
+        parse="ok",
+        outcome="DRIFT",
+        items=[VerdictItem(symbol="600519.SH", state="DRIFT", reason="band crossed")],
+        previous=VerdictRecord(
+            session_id="sess-8",
+            recorded_at=1_700_000_000_000,
+            parse="ok",
+            outcome="no_calls",
+            items=[],
+        ),
+    )
+    _seed(store, id="with-verdict", last_verdict=verdict)
+
+    response = client.get("/scheduled-runs")
+
+    assert response.status_code == 200
+    (row,) = response.json()
+    assert row["last_verdict"]["outcome"] == "DRIFT"
+    assert row["last_verdict"]["items"][0]["symbol"] == "600519.SH"
+    assert row["last_verdict"]["previous"]["outcome"] == "no_calls"
+
+
+def test_list_omits_verdict_when_never_recorded(
+    client: TestClient, store: ScheduledResearchJobStore
+):
+    _seed(store, id="no-verdict")
+
+    response = client.get("/scheduled-runs")
+
+    assert response.status_code == 200
+    (row,) = response.json()
+    assert row["last_verdict"] is None

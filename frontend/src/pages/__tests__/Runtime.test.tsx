@@ -96,6 +96,36 @@ function makeLongbridgeStatus(
   });
 }
 
+function makeEtoroStatus(
+  authOverrides: Partial<LiveBrokerStatus["auth"]> = {},
+): LiveStatus {
+  return makeStatus({
+    brokers: [
+      {
+        auth: {
+          broker: "etoro",
+          oauth_token_present: false,
+          is_live_broker: false,
+          profile_id: "etoro-live-sdk-readonly",
+          transport: "broker_sdk",
+          configured: false,
+          connection_state: "not_configured",
+          error_code: "credentials_missing",
+          ...authOverrides,
+        },
+        runner: {
+          broker: "etoro",
+          alive: false,
+          last_tick: null,
+          last_tick_age_seconds: null,
+        },
+        mandate: null,
+        halted: false,
+      },
+    ],
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -226,6 +256,18 @@ describe("Runtime page", () => {
     expect(screen.getByText("LONGBRIDGE_ACCESS_TOKEN")).toBeInTheDocument();
     expect(document.querySelector('input[type="password"]')).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("shows exact missing eToro variable names without rendering secret inputs", async () => {
+    apiMock.getLiveStatus.mockResolvedValue(makeEtoroStatus());
+
+    render(<Runtime />);
+
+    expect(await screen.findByText("Not configured")).toBeInTheDocument();
+    expect(screen.getByText("ETORO_API_KEY")).toBeInTheDocument();
+    expect(screen.getByText("ETORO_USER_KEY")).toBeInTheDocument();
+    expect(screen.queryByText("LONGBRIDGE_APP_KEY")).not.toBeInTheDocument();
+    expect(document.querySelector('input[type="password"]')).not.toBeInTheDocument();
   });
 
   it("renders a verify action when Longbridge is ready", async () => {

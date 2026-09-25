@@ -98,6 +98,26 @@ def test_asset_growth_uses_annual_period_over_period_semantics() -> None:
     pd.testing.assert_series_equal(result, expected, check_names=False)
 
 
+def test_asset_growth_reads_a_year_ahead_on_a_daily_densified_panel() -> None:
+    # load_fundamental_panel densifies every dependency to the daily price
+    # index before a derived field runs (backtest.runner passes index=
+    # panel["close"].index), so total_assets arrives here as a forward-filled
+    # daily series, never one row per annual period_end. A row-positional
+    # shift(1) then compares yesterday to today (flat 0% every ordinary day,
+    # a spurious one-day spike on a filing update) instead of this year to
+    # last -- the growth reading must stay at the true year-over-year value
+    # across the whole year following a step, not just on the step's own day.
+    dates = pd.date_range("2024-01-01", "2025-12-31", freq="D")
+    total_assets = pd.Series(100.0, index=dates)
+    total_assets.loc["2024-07-01":] = 110.0
+    data = {"total_assets": pd.DataFrame({"AAPL": total_assets})}
+
+    result = DERIVED_FIELDS["asset_growth"]["compute"](data)
+
+    assert result.loc["2025-01-15", "AAPL"] == pytest.approx(0.10)
+    assert result.loc["2025-06-25", "AAPL"] == pytest.approx(0.10)
+
+
 def test_resolve_field_and_list_supported_fields() -> None:
     kind, raw_spec = resolve_field("revenue")
     assert kind == "raw"

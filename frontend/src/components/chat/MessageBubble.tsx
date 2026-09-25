@@ -187,21 +187,24 @@ function formatElapsed(elapsedMs: number): string {
 export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props) {
   if (msg.type === "user") {
     const meta = msg.meta;
+    const attachments = meta?.attachments
+      ?? (meta?.attachment ? [meta.attachment] : []);
     return (
       <div className="flex justify-end group">
         <div className="max-w-[72%] max-h-[40vh] overflow-y-auto break-words rounded-[18px] bg-muted px-4 py-3 text-[15px] text-foreground leading-relaxed whitespace-pre-wrap">
-          {meta && (meta.attachment || meta.swarmMode || meta.goalMode) && (
+          {meta && (attachments.length > 0 || meta.swarmMode || meta.goalMode) && (
             <div className="mb-1.5 flex flex-wrap justify-end gap-1.5 text-[10px] leading-none text-muted-foreground">
-              {meta.attachment && (
+              {attachments.map((attachment, index) => (
                 <span
+                  key={`${attachment.filename}-${index}`}
                   className="inline-flex max-w-full items-center gap-1 rounded-full bg-background/60 px-2 py-1 text-muted-foreground"
                   title={i18n.t("agent.attachmentChip" as never)}
                 >
                   <Paperclip className="h-3 w-3 shrink-0" />
                   <span className="sr-only">{i18n.t("agent.attachmentChip" as never)}: </span>
-                  <span className="truncate">{meta.attachment.filename}</span>
+                  <span className="truncate">{attachment.filename}</span>
                 </span>
-              )}
+              ))}
               {meta.swarmMode && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-background/60 px-2 py-1 text-muted-foreground">
                   <Users className="h-3 w-3" />

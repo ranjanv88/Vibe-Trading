@@ -39,7 +39,7 @@ class TestFfillLimit:
         df = pd.DataFrame({"close": close, "open": close}, index=dates)
         sig = pd.Series(1.0, index=dates)
 
-        _, close_df, _, _ = _align({"A": df}, {"A": sig}, ["A"])
+        _, close_df, _, _, _ = _align({"A": df}, {"A": sig}, ["A"])
         # 3-bar gap should be filled — no NaN in close
         assert close_df["A"].isna().sum() == 0
 
@@ -50,7 +50,7 @@ class TestFfillLimit:
         df = pd.DataFrame({"close": close, "open": close}, index=dates)
         sig = pd.Series(1.0, index=dates)
 
-        _, close_df, _, _ = _align({"A": df}, {"A": sig}, ["A"])
+        _, close_df, _, _, _ = _align({"A": df}, {"A": sig}, ["A"])
         # 8-bar gap: ffill covers first 5, remaining 3 should be NaN
         nan_count = close_df["A"].isna().sum()
         assert nan_count == 3, f"Expected 3 NaN bars after ffill limit=5, got {nan_count}"
@@ -72,7 +72,7 @@ class TestFfillLimit:
             "BAD": pd.Series(1.0, index=dates),
         }
 
-        _, close_df, pos_df, _ = _align(data_map, signal_map, ["GOOD", "BAD"])
+        _, close_df, _, pos_df, _ = _align(data_map, signal_map, ["GOOD", "BAD"])
         assert "BAD" not in close_df.columns, "All-NaN symbol should be dropped"
         assert "GOOD" in close_df.columns
         assert "BAD" not in pos_df.columns
@@ -115,17 +115,17 @@ class TestSymbolIsolation:
         signal_map = {"GOOD": sig.copy(), "BAD": sig.copy()}
         valid_codes = ["GOOD", "BAD"]
 
-        _, close_df, target_pos, _ = _align(data_map, signal_map, valid_codes)
+        _, close_df, _, target_pos, _ = _align(data_map, signal_map, valid_codes)
 
         engine = ChinaAEngine({"initial_cash": 1_000_000})
 
         # Patch the opening-plan boundary to throw for BAD only.
         original_plan = ChinaAEngine._plan_open_order
 
-        def _exploding_plan(self, symbol, target_weight, df, ts, equity):
+        def _exploding_plan(self, symbol, target_weight, df, ts, equity, **kwargs):
             if symbol == "BAD":
                 raise RuntimeError("Simulated failure for BAD")
-            return original_plan(self, symbol, target_weight, df, ts, equity)
+            return original_plan(self, symbol, target_weight, df, ts, equity, **kwargs)
 
         with patch.object(ChinaAEngine, "_plan_open_order", _exploding_plan):
             # Should NOT raise — exception is caught internally
@@ -164,9 +164,14 @@ class TestSymbolIsolation:
                 assert frame["income_total_revenue"].iloc[-1] == 120.0
                 return {"000001.SZ": pd.Series(0.0, index=frame.index)}
 
-        def fake_enrich(data_map, provider, fields_by_table, *, as_of, periods=None):
+        def fake_enrich(
+            data_map, provider, fields_by_table, *, as_of, periods=None, subdaily="reject"
+        ):
             assert fields_by_table == {"income": ["total_revenue"]}
             assert as_of == "2024-04-30"
+            # #1387: the engine forwards the sub-daily PIT policy, and the
+            # default must stay the fail-closed one.
+            assert subdaily == "reject"
             enriched = {code: frame.copy() for code, frame in data_map.items()}
             enriched["000001.SZ"]["income_total_revenue"] = [None, 80.0, 120.0]
             return enriched
@@ -216,10 +221,17 @@ class TestSymbolIsolation:
                 return {"000001.SZ": pd.Series(0.0, index=data_map["000001.SZ"].index)}
 
         def fake_resolve_benchmark(**kwargs):
-            return SimpleNamespace(
+            # The real result type, not a namespace: the engine re-measures the
+            # benchmark over the evaluated window via BenchmarkResult's own
+            # method, so a stub that only carries attributes would not exercise
+            # the path under test.
+            from backtest.benchmark import BenchmarkResult
+
+            return BenchmarkResult(
                 ticker="000300.SH",
                 ret_series=pd.Series([0.0, 0.01, -0.005], index=dates),
                 total_ret=0.00495,
+                close=pd.Series([100.0, 101.0, 100.495], index=dates),
             )
 
         monkeypatch.setattr("backtest.benchmark.resolve_benchmark", fake_resolve_benchmark)
@@ -290,6 +302,24 @@ class TestBacktestConfigSchema:
         assert c.codes == ["AAPL.US"]
         assert c.interval == "1D"
         assert c.engine == "daily"
+        assert c.position_adjustment == "hold"
+
+    def test_position_adjustment_accepts_rebalance_and_rejects_unknown_mode(self) -> None:
+        valid = BacktestConfigSchema(
+            codes=["AAPL.US"],
+            start_date="2025-01-01",
+            end_date="2025-06-01",
+            position_adjustment="rebalance",
+        )
+        assert valid.position_adjustment == "rebalance"
+
+        with pytest.raises(ValueError, match="position_adjustment"):
+            BacktestConfigSchema(
+                codes=["AAPL.US"],
+                start_date="2025-01-01",
+                end_date="2025-06-01",
+                position_adjustment="resize",
+            )
 
     def test_fundamental_fields_must_be_table_to_field_list_mapping(self) -> None:
         with pytest.raises(ValueError, match="fundamental_fields"):
@@ -534,7 +564,7 @@ class TestFullBacktestRobustness:
         signal_map = {"NORMAL": sig.copy(), "SUSPENDED": sig.copy()}
         valid_codes = ["NORMAL", "SUSPENDED"]
 
-        _, close_df, target_pos, _ = _align(data_map, signal_map, valid_codes)
+        _, close_df, _, target_pos, _ = _align(data_map, signal_map, valid_codes)
 
         # The 14-bar gap should not be fully filled
         suspended_nan_count = close_df["SUSPENDED"].isna().sum()

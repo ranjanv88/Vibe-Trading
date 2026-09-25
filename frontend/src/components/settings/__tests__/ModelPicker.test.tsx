@@ -58,4 +58,32 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("listbox", { name: "Available models" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Available models" })).toBeInTheDocument();
   });
+
+  it("renders the full long model slug (not truncated) so the dropdown stays readable", async () => {
+    const long = "openrouter/deepseek/deepseek-v4-pro-provider-vertex-200k-context-weekly-multimodal";
+    render(
+      <ModelPicker
+        value={long}
+        options={[long, "deepseek-v4-pro"]}
+        onChange={() => {}}
+        ariaLabel="Model"
+        optionsAriaLabel="Available models"
+      />,
+    );
+    await userEvent.setup().click(screen.getByRole("combobox", { name: "Model" }));
+
+    const option = screen.getByRole("option", { name: long });
+    // the full slug must be present in the DOM and NOT applied a truncate utility —
+    // truncate would clip it to an ellipsis, defeating the resize fix
+    expect(option).toBeInTheDocument();
+    expect(option.textContent).toContain(long);
+    expect(option).not.toHaveClass("truncate");
+    expect(option.querySelector("span")).not.toHaveClass("truncate");
+    expect(screen.getByRole("listbox", { name: "Available models" })).toHaveClass(
+      "max-h-64",
+      "max-w-[min(32rem,90vw)]",
+      "overflow-y-auto",
+      "overflow-x-hidden",
+    );
+  });
 });

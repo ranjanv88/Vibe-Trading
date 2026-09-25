@@ -54,8 +54,21 @@ class HostThrottle:
     """
 
     def __init__(self) -> None:
-        self._last: dict[str, float] = {}
+        self._last: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
+        self._last_sweep: float = 0.0
+
+    def _sweep_stale_locked(self, cutoff: float) -> None:
+        """Drop buckets whose spacing window has fully elapsed. Caller holds the lock.
+
+        A bucket is only stale once ``fire_at + min_interval`` has passed —
+        before that, the next request to that bucket must still wait for its
+        spacing interval. Sweeping earlier would let the next request fire
+        immediately, defeating the rate limiter.
+        """
+        stale = [k for k, (t, interval) in self._last.items() if t + interval < cutoff]
+        for k in stale:
+            del self._last[k]
 
     def wait(self, bucket: str, min_interval: float) -> None:
         """Block until ``bucket`` is allowed to fire again, then record the slot.
@@ -71,7 +84,15 @@ class HostThrottle:
             return
         with self._lock:
             now = time.monotonic()
-            last = self._last.get(bucket)
+            # Periodic sweep: drop stale buckets so a process that queries
+            # many distinct hosts (e.g. a batch job hitting N tickers) does
+            # not accumulate dead entries without bound. Throttled to once
+            # per minute to avoid sweeping on every call.
+            if now - self._last_sweep >= 60.0:
+                self._sweep_stale_locked(now)
+                self._last_sweep = now
+            entry = self._last.get(bucket)
+            last = entry[0] if entry is not None else None
             if last is None or now >= last + min_interval:
                 # Slot is free right now — fire immediately, no jitter needed.
                 fire_at = now
@@ -79,7 +100,7 @@ class HostThrottle:
                 # Chain off the previous reservation and add jitter to desync
                 # concurrent callers, baking the jitter into the stored slot.
                 fire_at = last + min_interval + random.uniform(0.0, _JITTER_MAX_S)
-            self._last[bucket] = fire_at
+            self._last[bucket] = (fire_at, min_interval)
         sleep_for = fire_at - time.monotonic()
         if sleep_for > 0:
             time.sleep(sleep_for)
@@ -174,6 +195,35 @@ def throttled_get_json(
         params=params,
         headers=headers,
         timeout=timeout,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def throttled_post_json(
+    url: str,
+    *,
+    host_key: str,
+    min_interval: float,
+    json_body: Any,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 15.0,
+) -> Any:
+    """Throttled POST of a JSON body that decodes the response as JSON.
+
+    POST twin of :func:`throttled_get_json` for JSON-RPC style providers
+    (e.g. MCP-over-HTTP endpoints): same throttle/session bucketing, plus
+    ``raise_for_status()`` and ``.json()``. A non-2xx status or undecodable
+    body raises for the caller's retry policy to classify.
+    """
+    merged_headers = {"User-Agent": DEFAULT_USER_AGENT}
+    if headers:
+        merged_headers.update(headers)
+    _THROTTLE.wait(host_key, min_interval)
+    session = _session_for(host_key)
+    response = session.post(
+        url, json=json_body, params=params, headers=merged_headers, timeout=timeout
     )
     response.raise_for_status()
     return response.json()

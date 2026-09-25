@@ -3,8 +3,12 @@
 Wraps the shared :mod:`backtest.loaders.yahoo_client` (the public v8 chart
 endpoint) rather than the ``yfinance`` package, so it pulls in no new
 dependency and shares the process-wide throttle/session that keeps Yahoo from
-IP-rate-limiting us. Covers US equities (``AAPL.US``) and HK equities
-(``00700.HK``); the client maps each project symbol to Yahoo's ticker form.
+IP-rate-limiting us. Covers US equities (``AAPL.US``), HK equities
+(``00700.HK``), Canadian equities (``TD.TO`` / ``PNG.V``), and Vietnamese
+equities (``VIC.VN``); the client maps each project symbol to Yahoo's ticker
+form.
+
+Yahoo officially lists HOSE under ``.VN``; HNX and UPCOM are not supported.
 
 The chart endpoint returns each bar's ``trade_date`` as an epoch-second
 timestamp; this loader converts those to a tz-naive ``DatetimeIndex`` and clips
@@ -21,7 +25,11 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from backtest.loaders import yahoo_client
-from backtest.loaders.base import cached_loader_fetch, validate_date_range
+from backtest.loaders.base import (
+    cached_loader_fetch,
+    normalize_declared_quote_currency,
+    validate_date_range,
+)
 from backtest.loaders.registry import register
 
 logger = logging.getLogger(__name__)
@@ -44,17 +52,26 @@ _INTERVAL_MAP = {
 def _is_supported(code: str) -> bool:
     """Return whether *code* is a symbol this loader handles.
 
-    Covers US/HK/India/Korea equities plus Yahoo's own futures (``GC=F``) and
-    forex (``EURUSD=X``) suffix conventions, which the public chart endpoint
-    serves verbatim (the code is used as-is in the request URL, no
-    conversion) (#718). Bare US tickers (``AAPL``, ``NVDA``, ``BRK.B``) are
-    also accepted: they are valid Yahoo chart codes verbatim and previously
-    fell through every loader, leaving plain tickers unresolved (#us-bare).
+    Covers US/HK/India/Korea/Canada/Vietnam/UK equities plus Yahoo's own
+    futures (``GC=F``), forex (``EURUSD=X``) and index (``^SPX``) symbol
+    conventions, which the public chart endpoint serves verbatim (the code is
+    used as-is in the request URL, no conversion) (#718). Supported UK ``.L``
+    lines must declare GBP or GBp; GBp is normalized to GBP at fetch time
+    (#1206). Bare US tickers (``AAPL``, ``NVDA``, ``BRK.B``) are also
+    accepted: they are valid Yahoo chart codes verbatim and previously fell
+    through every loader, leaving plain tickers unresolved (#us-bare).
     """
     upper = code.strip().upper()
-    if upper.endswith((".US", ".HK", ".NS", ".BO", ".KS", ".KQ", "=F", "=X")):
+    if upper.startswith("^"):
         return True
-    return bool(re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", upper))
+    if upper.endswith(
+        (
+            ".US", ".HK", ".NS", ".BO", ".KS", ".KQ", ".TO", ".V", ".VN", ".BA",
+            ".L", "=F", "=X",
+        )
+    ):
+        return True
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9]{0,4}(?:\.[A-Z])?", upper))
 
 
 def _to_yahoo_interval(interval: str) -> str:
@@ -174,10 +191,17 @@ def _rows_to_frame(
 
 @register
 class DataLoader:
-    """Yahoo Finance US/HK equity OHLCV loader (free, direct HTTP, no auth)."""
+    """Yahoo Finance global-equity OHLCV loader (free, direct HTTP, no auth)."""
 
     name = "yahoo"
-    markets = {"us_equity", "hk_equity", "india_equity", "kr_equity"}
+    markets = {
+        "us_equity", "hk_equity", "india_equity", "kr_equity", "ca_equity",
+        "vietnam_equity", "uk_equity", "ar_equity",
+    }
+    # Yahoo chart volume is single shares for US/HK equities
+    # (HKUDS/Vibe-Trading#1062; HK verified 2026-08-11, 00700.HK ratio 1.00
+    # vs tencent/eastmoney). Other equity markets stay undeclared.
+    volume_units = {"us_equity": "shares", "hk_equity": "shares", "uk_equity": "shares"}
     requires_auth = False
 
     def is_available(self) -> bool:
@@ -200,7 +224,8 @@ class DataLoader:
         """Fetch OHLCV history keyed by the original project symbols.
 
         Args:
-            codes: Project symbols such as ``AAPL.US`` and ``00700.HK``.
+            codes: Project symbols such as ``AAPL.US``, ``00700.HK``,
+                ``TD.TO``, and ``VIC.VN``.
             start_date: Inclusive start date (``YYYY-MM-DD``).
             end_date: Inclusive end date (``YYYY-MM-DD``).
             interval: Backtest interval such as ``1D`` or ``1H``.
@@ -248,8 +273,8 @@ class DataLoader:
             interval: Backtest interval string.
 
         Returns:
-            The OHLCV DataFrame for *code*, ``None`` if it is not a US/HK/India
-            symbol or Yahoo returns no usable bars.
+            The OHLCV DataFrame for *code*, ``None`` if it is unsupported or
+            Yahoo returns no usable bars.
         """
         if not _is_supported(code):
             return None
@@ -259,11 +284,12 @@ class DataLoader:
         period1 = _epoch_seconds(start_date)
         period2 = _epoch_seconds(end_date) + 86400
 
-        rows = yahoo_client.get_chart(
+        rows, currency = yahoo_client.get_chart(
             code,
             interval=_to_yahoo_interval(interval),
             period1=period1,
             period2=period2,
         )
         frame = _rows_to_frame(rows, start_date, end_date, interval)
+        frame = normalize_declared_quote_currency(frame, code, currency)
         return frame if not frame.empty else None

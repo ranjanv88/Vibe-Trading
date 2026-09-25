@@ -57,12 +57,6 @@ PROVIDERS: Final[tuple[Provider, ...]] = (
              "https://openrouter.ai/api/v1", "sk-or-",
              ("deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash",
               "openai/gpt-5.5-pro", "google/gemini-3.5-flash")),
-    Provider("requesty", "Requesty", "OpenAI-compatible gateway — 600+ models, one key",
-             "openai/gpt-4o-mini",
-             "REQUESTY_API_KEY", "REQUESTY_BASE_URL",
-             "https://router.requesty.ai/v1", None,
-             ("openai/gpt-4o-mini", "openai/gpt-4o",
-              "anthropic/claude-sonnet-4-5", "deepseek/deepseek-chat")),
     Provider("openai", "OpenAI", "GPT-5.5 direct",
              "gpt-5.5", "OPENAI_API_KEY", "OPENAI_BASE_URL",
              "https://api.openai.com/v1", "sk-",
@@ -80,6 +74,10 @@ PROVIDERS: Final[tuple[Provider, ...]] = (
              "deepseek-v4-pro", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL",
              "https://api.deepseek.com/v1", "sk-",
              ("deepseek-v4-pro", "deepseek-v4-flash")),
+    Provider("opencode", "OpenCode", "Go / Zen relay — DeepSeek, GLM, Kimi, Qwen under one key",
+             "deepseek-v4.1-flash", "OPENCODE_API_KEY", "OPENCODE_BASE_URL",
+             "https://opencode.ai/zen/go/v1", "sk-",
+             ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3-flash")),
     Provider("siliconflow-cn", "SiliconFlow (CN)", "OpenAI-compatible MaaS endpoint in China",
              "deepseek-ai/DeepSeek-V3.1-Terminus",
              "SILICONFLOW_API_KEY", "SILICONFLOW_BASE_URL",
@@ -90,6 +88,11 @@ PROVIDERS: Final[tuple[Provider, ...]] = (
              "SILICONFLOW_GLOBAL_API_KEY", "SILICONFLOW_GLOBAL_BASE_URL",
              "https://api.siliconflow.com/v1", "sk-",
              ("deepseek-ai/DeepSeek-V3.1-Terminus",)),
+    Provider("modelscope", "ModelScope", "Alibaba's OpenAI-compatible MaaS platform",
+             "Qwen/Qwen3.5-27B",
+             "MODELSCOPE_API_KEY", "MODELSCOPE_BASE_URL",
+             "https://api-inference.modelscope.cn/v1", None,
+             ("Qwen/Qwen3.5-27B", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B")),
     Provider("nvidia", "NVIDIA NIM", "hosted NVIDIA API catalog",
              "nvidia/nemotron-3-ultra-550b-a55b",
              "NVIDIA_API_KEY", "NVIDIA_BASE_URL",
@@ -124,14 +127,27 @@ def _render_env(values: dict[str, str]) -> str:
 
 
 def _save_partial(values: dict[str, str]) -> None:
-    """Best-effort write to ``.env.partial`` (crash-resilience nicety)."""
+    """Best-effort atomic write to ``.env.partial`` (crash-resilience nicety).
+
+    Mirrors :func:`_finalize`: ``mkstemp`` creates the temp file 0600-only, so
+    the mode is never applied to an already-visible file, and ``replace`` swaps
+    it in atomically. Writing to the destination directly would defeat the whole
+    point of the file — unlinking it first, or truncating it on open, throws away
+    the recovery state this function exists to preserve if the very next write
+    fails.
+    """
     try:
         _env_dir().mkdir(parents=True, exist_ok=True)
-        _partial_path().write_text(_render_env(values), encoding="utf-8")
+        fd, tmp_name = tempfile.mkstemp(prefix=".env.partial.", dir=str(_env_dir()))
         try:
-            _partial_path().chmod(0o600)
-        except OSError:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(_render_env(values))
+            Path(tmp_name).replace(_partial_path())
+        finally:
+            try:
+                Path(tmp_name).unlink()
+            except (FileNotFoundError, OSError):
+                pass
     except OSError:
         pass
 

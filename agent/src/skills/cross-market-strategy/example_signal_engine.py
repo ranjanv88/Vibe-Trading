@@ -1,6 +1,6 @@
 """Cross-market strategy example: vol-adjusted dual-MA with per-market parameters.
 
-Supports any combination of A-shares, crypto, US/HK equity, forex, and futures.
+Supports any combination of A-shares, crypto, US/HK/Canada equity, forex, and futures.
 The CompositeEngine handles calendar alignment, market rules, and shared capital.
 """
 
@@ -16,6 +16,7 @@ MARKET_PARAMS = {
     "crypto":     {"ma_fast": 7,  "ma_slow": 25, "vol_lookback": 14},
     "us_equity":  {"ma_fast": 10, "ma_slow": 50, "vol_lookback": 20},
     "hk_equity":  {"ma_fast": 10, "ma_slow": 50, "vol_lookback": 20},
+    "ca_equity":  {"ma_fast": 10, "ma_slow": 50, "vol_lookback": 20},
     "forex":      {"ma_fast": 10, "ma_slow": 30, "vol_lookback": 20},
     "futures":    {"ma_fast": 5,  "ma_slow": 20, "vol_lookback": 20},
 }
@@ -24,6 +25,7 @@ _MARKET_PATTERNS = [
     (re.compile(r"^\d{6}\.(SZ|SH|BJ)$", re.I), "a_share"),
     (re.compile(r"^[A-Z]+\.US$", re.I), "us_equity"),
     (re.compile(r"^\d{3,5}\.HK$", re.I), "hk_equity"),
+    (re.compile(r"^[A-Z0-9&.\-]+\.(TO|V)$", re.I), "ca_equity"),
     (re.compile(r"^[A-Z]+-USDT$", re.I), "crypto"),
     (re.compile(r"^[A-Z]+/USDT$", re.I), "crypto"),
     (re.compile(r"^[A-Z]{3}/[A-Z]{3}$"), "forex"),
@@ -62,7 +64,7 @@ class SignalEngine:
     def _vol_adjust(self, signals: dict, data_map: dict) -> dict:
         vols = {}
         for code, df in data_map.items():
-            ret = df["close"].pct_change().dropna()
+            ret = df["close"].pct_change(fill_method=None).dropna()
             vols[code] = (
                 ret.rolling(20).std().iloc[-1]
                 if len(ret) > 20

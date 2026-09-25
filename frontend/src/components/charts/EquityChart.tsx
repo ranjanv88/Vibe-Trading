@@ -1,33 +1,31 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import i18n from "@/i18n";
 import type { EquityPoint } from "@/lib/api";
 import { getChartTheme } from "@/lib/chart-theme";
 import { abbreviateNum } from "@/lib/formatters";
-import { echarts, CHART_GROUP, connectCharts } from "@/lib/echarts";
-import { useThemeDark } from "@/lib/theme-store";
+import { escapeHtml } from "@/lib/escapeHtml";
+import { useChartLifecycle } from "@/hooks/useChartLifecycle";
+import type { DrawdownZone } from "@/lib/tearsheet";
 
 interface Props {
   data: EquityPoint[];
   height?: number;
+  drawdownZones?: DrawdownZone[];
 }
 
-export function EquityChart({ data, height = 300 }: Props) {
+export function EquityChart({ data, height = 300, drawdownZones }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const dark = useThemeDark();
 
-  useEffect(() => {
-    if (!ref.current || data.length === 0) return;
+  useChartLifecycle(ref, () => {
     const t = getChartTheme();
-    const chart = echarts.init(ref.current);
-    chart.group = CHART_GROUP;
-    connectCharts();
+    const zones = drawdownZones ?? [];
 
     const dates = data.map((d) => d.time);
     const equity = data.map((d) => Number(d.equity));
     const drawdown = data.map((d) => (Number(d.drawdown) * 100).toFixed(2));
     const minDD = Math.min(...drawdown.map(Number));
 
-    chart.setOption({
+    return {
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis",
@@ -38,7 +36,7 @@ export function EquityChart({ data, height = 300 }: Props) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         formatter: (params: any) => {
           if (!Array.isArray(params) || !params.length) return "";
-          let html = `<b>${params[0].axisValue}</b>`;
+          let html = `<b>${escapeHtml(String(params[0].axisValue))}</b>`;
           for (const p of params) {
             const val = p.seriesName === "Drawdown%"
               ? `${p.value}%`
@@ -86,6 +84,19 @@ export function EquityChart({ data, height = 300 }: Props) {
           areaStyle: {
             color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: t.infoColor + "40" }, { offset: 1, color: t.infoColor + "00" }] },
           },
+          ...(zones.length > 0 ? {
+            markArea: {
+              silent: true,
+              data: zones.map((zone) => [
+                {
+                  xAxis: zone.startTime,
+                  itemStyle: { color: t.downColor + "14" },
+                  label: { show: true, position: "insideTopLeft", formatter: `#${zone.rank}`, fontSize: 9, color: t.downColor },
+                },
+                { xAxis: zone.endTime },
+              ]),
+            },
+          } : {}),
         },
         {
           name: "Drawdown%", type: "line", xAxisIndex: 1, yAxisIndex: 1,
@@ -99,23 +110,8 @@ export function EquityChart({ data, height = 300 }: Props) {
           },
         },
       ],
-    });
-
-    let resizeFrame: number | null = null;
-    const ro = new ResizeObserver(() => {
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      resizeFrame = requestAnimationFrame(() => {
-        resizeFrame = null;
-        chart.resize();
-      });
-    });
-    ro.observe(ref.current!);
-    return () => {
-      ro.disconnect();
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      chart.dispose();
     };
-  }, [data, dark]);
+  }, [data, drawdownZones]);
 
   if (data.length === 0) {
     return <div className="text-muted-foreground text-sm p-4">{i18n.t("charts.noEquityData")}</div>;

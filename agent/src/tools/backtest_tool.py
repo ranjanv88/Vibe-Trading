@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from backtest.loaders.registry import VALID_SOURCES
 from src.agent.progress import emit_progress
 from src.agent.tools import BaseTool
 from src.core.runner import Runner
+from src.core.state import RunStateStore
 from src.tools.path_utils import safe_run_dir
 
 
@@ -29,7 +31,14 @@ def run_backtest(run_dir: str) -> str:
 
     config_path = run_path / "config.json"
     if not config_path.exists():
-        return json.dumps({"status": "error", "error": "config.json not found"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "error",
+                "error": f"config.json not found in {run_path}",
+                "hint": "config.json belongs at the root of run_dir.",
+            },
+            ensure_ascii=False,
+        )
 
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -44,7 +53,14 @@ def run_backtest(run_dir: str) -> str:
 
     signal_path = run_path / "code" / "signal_engine.py"
     if not signal_path.exists():
-        return json.dumps({"status": "error", "error": "code/signal_engine.py not found"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "status": "error",
+                "error": f"code/signal_engine.py not found in {run_path}",
+                "hint": "signal_engine.py belongs in code/ inside run_dir.",
+            },
+            ensure_ascii=False,
+        )
 
     agent_root = Path(__file__).resolve().parents[2]
     entry_script = agent_root / "backtest" / "runner.py"
@@ -55,12 +71,34 @@ def run_backtest(run_dir: str) -> str:
         message=f"running backtest engine (source={source})",
     )
     runner = Runner(timeout=300)
-    result = runner.execute(
-        entry_script,
-        run_path,
-        cwd=agent_root,
-        cli_args=[str(run_path)],
-    )
+    try:
+        result = runner.execute(
+            entry_script,
+            run_path,
+            cwd=agent_root,
+            cli_args=[str(run_path)],
+        )
+    except subprocess.TimeoutExpired:
+        # The lifecycle block below is unreachable on a timeout, so record the
+        # failure here — otherwise the run is indistinguishable from never-run
+        # (the evidence gate fail-closes either way, but the reason is lost).
+        reason = f"backtest engine timed out after {runner.timeout}s"
+        RunStateStore().mark_failure(run_path, reason)
+        return json.dumps({
+            "status": "error",
+            "error": reason,
+            "run_dir": run_dir,
+        }, ensure_ascii=False)
+
+    # Record lifecycle status so tool-driven runs are ingestible by the
+    # evidence pipeline: refresh_strategy_evidence fail-closes without
+    # state.json, which previously only the runtime loop wrote (#1412).
+    # Same contract as the runtime — success, or failure with a reason.
+    state_store = RunStateStore()
+    if result.success:
+        state_store.mark_success(run_path)
+    else:
+        state_store.mark_failure(run_path, f"backtest engine exited with code {result.exit_code}")
 
     emit_progress("finalize", message="collecting artifacts")
     artifacts_found = {name: str(path) for name, path in result.artifacts.items()}

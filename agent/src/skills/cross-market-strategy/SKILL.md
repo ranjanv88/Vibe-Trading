@@ -6,7 +6,7 @@ category: strategy
 
 ## When to Use
 
-When the user requests a backtest with codes from **different markets** — e.g. `["000001.SZ", "BTC-USDT"]` or `["AAPL.US", "EUR/USD", "600519.SH"]`.
+When the user requests a backtest with codes from **different markets** — e.g. `["000001.SZ", "BTC-USDT"]`, `["TD.TO", "PNG.V"]`, or `["AAPL.US", "EUR/USD", "600519.SH"]`.
 
 The `CompositeEngine` handles calendar alignment, shared capital, and market rules automatically. The strategy only needs to output per-symbol signals.
 
@@ -51,7 +51,7 @@ BTC daily vol ~ 5%, A-share daily vol ~ 1.5%. Without vol-adjustment, crypto eat
 def _vol_adjust(self, signals, data_map):
     vols = {}
     for code, df in data_map.items():
-        ret = df["close"].pct_change().dropna()
+        ret = df["close"].pct_change(fill_method=None).dropna()
         vols[code] = ret.rolling(20).std().iloc[-1] if len(ret) > 20 else ret.std()
 
     inv_vols = {c: 1.0 / (v + 1e-10) for c, v in vols.items()}
@@ -103,6 +103,7 @@ def _vol_adjust(self, signals, data_map):
 | `000001.SZ`, `600519.SH` | A-share |
 | `AAPL.US` | US equity |
 | `700.HK` | HK equity |
+| `TD.TO`, `PNG.V` | Canada equity (TSX / TSXV) |
 | `BTC-USDT` | Crypto |
 | `IF2406.CFFEX` | China futures |
 | `ESZ4` | Global futures |

@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.13"
+    "version": "v0.1.15"
   },
   "layout": {
     "home": "首页",
@@ -8,9 +8,11 @@
     "runtime": "交易监控",
     "scheduled": "定时任务",
     "reports": "报告",
+    "portfolio": "持仓",
     "alphaZoo": "Alpha 因子库",
     "settings": "设置",
     "correlation": "相关性矩阵",
+    "optionsLab": "期权实验室",
     "sessions": "会话",
     "newChat": "新建对话",
     "noSessions": "还没有对话——点 + 开始第一个",
@@ -96,6 +98,10 @@
     "connectorStatusUnavailable": "状态不可用",
     "connectedAccessUnknown": "已连接 · 访问权限未知",
     "missingLongbridgeVariables": "缺少配置。请在 agent/.env 中配置以下变量并重新创建服务：",
+    "missingEtoroVariables": "缺少配置。请设置以下环境变量或创建 ~/.vibe-trading/etoro.json：",
+    "missingEtoroFileHint": "示例：{\"api_key\": \"YOUR_PUBLIC_API_KEY\", \"user_key\": \"YOUR_USER_KEY\", \"profile\": \"live-readonly\"}。配置文件：etoro-paper-sdk、etoro-live-sdk-readonly、etoro-paper-trade、etoro-live-trade。",
+    "missingConnectorVariables": "缺少配置。请在 ~/.vibe-trading/ 或 agent/.env 中配置连接器凭据，然后验证连接。",
+    "pathSeparatedKeyBound": "模拟/真实路径分离（共享密钥对）",
     "sdkConnectorProfile": "直连 SDK 连接器 · 只读档案",
     "connectionDetails": "连接详情",
     "environment": "环境",
@@ -116,9 +122,9 @@
     "connectorVerifyFailed": "连接验证失败。",
     "diagnosticCredentialsPartial": "凭证不完整。请配置所有必需变量并重新创建服务。",
     "diagnosticCredentialsConflict": "凭证来源冲突。请仅保留一套完整来源，然后重试。",
-    "diagnosticSdkMissing": "后端服务未安装 Longbridge SDK。",
+    "diagnosticSdkMissing": "后端服务未安装此券商所需的 SDK。",
     "diagnosticAuthenticationFailed": "认证失败。请检查已配置的凭证。",
-    "diagnosticNetworkUnreachable": "无法连接 Longbridge 服务。请检查网络后重试。",
+    "diagnosticNetworkUnreachable": "无法连接券商服务或本地网关。请检查连接地址和网络后重试。",
     "diagnosticBrokerError": "券商拒绝了只读验证请求。请重试或检查后端日志。"
   },
   "scheduled": {
@@ -152,12 +158,46 @@
     "statusCompleted": "已完成",
     "statusFailed": "失败",
     "statusCancelled": "已取消",
+    "statusExpired": "已到期",
+    "noFurtherRuns": "不再运行",
+    "endsAt": "结束时间：{{when}}",
+    "proposalCreateTitle": "定时研究确认 · 创建",
+    "proposalCancelTitle": "定时研究确认 · 取消",
+    "proposalConfirmed": "已确认",
+    "proposalDiscarded": "已放弃",
+    "proposalExpired": "已过期",
+    "proposalCadence": "运行节奏",
+    "proposalTimezone": "时区",
+    "proposalEndAt": "结束时间",
+    "proposalNoEnd": "无",
+    "proposalDelivery": "结果投递",
+    "proposalInApp": "仅应用内",
+    "proposalDiscard": "放弃",
+    "proposalConfirmCreate": "确认创建",
+    "proposalConfirmCancel": "确认取消",
     "nextRun": "下次运行：{{when}}",
     "lastError": "最近错误：{{error}}",
     "delete": "删除",
     "deleteAria": "删除定时任务：{{prompt}}",
     "confirmDelete": "确认删除",
-    "confirmDeleteAria": "确认删除定时任务：{{prompt}}"
+    "confirmDeleteAria": "确认删除定时任务：{{prompt}}",
+    "deliveryChannelLabel": "推送到频道",
+    "deliveryChannelPlaceholder": "telegram、feishu…（留空则结果只留在应用内）",
+    "deliveryTargetLabel": "频道目标",
+    "deliveryTargetPlaceholder": "会话 / 群 / 用户 id",
+    "deliveryHint": "默认关闭。简报在运行**结束后**推送，而不是在排定时推送。",
+    "deliveryTargetRequired": "请为该频道填写目标，或清空频道。",
+    "delivery_none": "下次运行结束后推送到 {{channel}}",
+    "delivery_pending": "待推送到 {{channel}}",
+    "delivery_sending": "正在推送到 {{channel}}",
+    "delivery_accepted": "已提交到 {{channel}}（无渠道回执）",
+    "delivery_sent": "已推送到 {{channel}}",
+    "delivery_failed": "推送到 {{channel}} 失败",
+    "verdictEmpty": "尚无判定",
+    "verdictUnreadable": "最新判定无法解析",
+    "verdictNoCalls": "无调用",
+    "verdictDelta": "{{was}} → {{now}}",
+    "verdictRecorded": "记于 {{when}}"
   },
   "reports": {
     "badge": "报告",
@@ -376,13 +416,387 @@
       "stoppedToast": "IM 通道已停止",
       "refreshFailed": "刷新 IM 通道失败",
       "startFailed": "启动 IM 通道失败",
-      "stopFailed": "停止 IM 通道失败"
+      "stopFailed": "停止 IM 通道失败",
+      "config": {
+        "toggleConfig": "配置 {{name}}",
+        "keepCurrent": "保留当前值（{{masked}}）",
+        "secretNotSet": "未设置",
+        "clearSecret": "清除",
+        "required": "必填",
+        "listPlaceholder": "输入后按回车添加",
+        "removeValue": "移除 {{value}}",
+        "save": "保存配置",
+        "hotApply": "保存后立即生效，无需重启。",
+        "saved": "渠道配置已保存",
+        "saveFailed": "保存渠道配置失败：{{message}}",
+        "test": "测试连接",
+        "testing": "测试中…",
+        "testOk": "连接验证通过",
+        "testFailed": "连接测试失败：{{message}}",
+        "testCodeOk": "服务商已接受这些凭据。",
+        "testCodeInvalidCredentials": "服务商拒绝了这些凭据。",
+        "testCodeNetwork": "无法连接到服务商。",
+        "testCodeUnsupported": "该渠道不支持连接测试。",
+        "testedSavedConfig": "测试的是已保存的配置。",
+        "testedDraftConfig": "测试的是表单中当前的值（尚未保存）。",
+        "enable": "启用渠道",
+        "enableHint": "停用会保留已保存的凭据，随时可以重新启用。",
+        "enabledToast": "渠道已启用",
+        "disabledToast": "渠道已停用",
+        "enableFailed": "启用渠道失败：{{message}}",
+        "disableFailed": "停用渠道失败：{{message}}",
+        "enableRejected": "服务商拒绝了这些凭据，渠道未启用。",
+        "enableRejectedDetail": "服务商响应：{{detail}}",
+        "enableAnyway": "仍然启用",
+        "enableAnywayHint": "仍然启用会跳过凭据校验，渠道可能无法连接。",
+        "notWritable": "渠道配置保存在 YAML 文件（{{path}}）中，Web UI 无法编辑。请直接修改该文件来更改凭据。",
+        "notWritableChip": "只读（YAML）",
+        "sdkMissing": "运行依赖未安装 — {{hint}}",
+        "sdkMissingNoHint": "运行依赖未安装；仍可配置该渠道，但可能无法启动。",
+        "noFields": "该渠道没有可配置的字段。",
+        "loadFailed": "无法加载渠道配置。"
+      },
+      "fields": {
+        "dingtalk": {
+          "client_id": {
+            "label": "Client ID（AppKey）",
+            "help": "钉钉开发者后台“凭据”页面中的应用 AppKey。"
+          },
+          "client_secret": {
+            "label": "Client Secret（AppSecret）",
+            "help": "应用的 AppSecret，保存在服务端，绝不会回传到浏览器。"
+          },
+          "allow_from": {
+            "label": "允许的发送者",
+            "help": "允许与智能体对话的钉钉发送者 ID 白名单（“*”表示全部允许）。未配对的用户会在私聊中收到配对码。"
+          },
+          "allow_remote_media_redirects": {
+            "label": "允许媒体重定向",
+            "help": "下载消息媒体时跟随服务商的重定向，默认关闭。"
+          },
+          "remote_media_redirect_allowed_hosts": {
+            "label": "允许重定向的主机",
+            "help": "开启媒体重定向后允许跳转的主机列表；为空时拒绝所有跨主机跳转。"
+          },
+          "group_user_isolation": {
+            "label": "群聊按用户隔离会话",
+            "help": "群聊中每个成员使用独立的智能体会话，而不是共享同一个会话。"
+          },
+          "force_ipv4": {
+            "label": "强制使用 IPv4",
+            "help": "将钉钉 API 调用绑定到 IPv4 出口。当应用配置了服务器出口 IP 白名单、IPv6 前缀会漂移而 IPv4 地址稳定时启用。"
+          }
+        },
+        "qq": {
+          "app_id": {
+            "label": "AppID",
+            "help": "QQ 开放平台（q.qq.com）应用设置中机器人的 AppID。"
+          },
+          "secret": {
+            "label": "AppSecret",
+            "help": "机器人的 AppSecret，保存在服务端，绝不会回传到浏览器。"
+          },
+          "allow_from": {
+            "label": "允许的发送者",
+            "help": "允许与智能体对话的 QQ 发送者 openid 白名单（“*”表示全部允许）。未配对的用户会在私聊中收到配对码。"
+          },
+          "msg_format": {
+            "label": "消息格式",
+            "help": "回复格式：plain 或 markdown。"
+          },
+          "ack_message": {
+            "label": "确认消息",
+            "help": "收到消息时立即发送的确认提示；留空则不发送。"
+          },
+          "media_dir": {
+            "label": "媒体目录",
+            "help": "保存接收到的附件的位置；留空时使用 ~/.vibe-trading/media/qq。"
+          },
+          "download_chunk_size": {
+            "label": "下载分块大小",
+            "help": "下载附件时每块的大小（字节，默认 262144）。"
+          },
+          "download_max_bytes": {
+            "label": "最大下载大小（字节）",
+            "help": "单个附件下载的安全上限（默认 209715200，即 200 MB）。"
+          }
+        },
+        "email": {
+          "consent_granted": {
+            "label": "已授予同意",
+            "help": "总开关：只有明确授予同意后，该渠道才会读取和发送邮件。"
+          },
+          "imap_host": {
+            "label": "IMAP 服务器",
+            "help": "收件（入站）邮件服务器地址，例如 imap.gmail.com。新邮件通过 IMAP 从该服务器轮询。"
+          },
+          "imap_port": {
+            "label": "IMAP 端口",
+            "help": "入站端口（默认 993，配合 SSL）。"
+          },
+          "imap_username": {
+            "label": "IMAP 用户名",
+            "help": "用于登录 IMAP 的邮箱账号，通常是完整的邮箱地址。"
+          },
+          "imap_password": {
+            "label": "IMAP 密码",
+            "help": "IMAP 邮箱密码或应用专用密码。仅保存在服务端，不会回传给浏览器。"
+          },
+          "imap_mailbox": {
+            "label": "IMAP 邮箱文件夹",
+            "help": "轮询新邮件所在的文件夹（默认 INBOX）。"
+          },
+          "imap_use_ssl": {
+            "label": "IMAP SSL",
+            "help": "通过 SSL 连接 IMAP（默认开启；993 端口需要）。"
+          },
+          "imap_use_tls": {
+            "label": "IMAP STARTTLS",
+            "help": "IMAP SSL 关闭时，登录前先用 STARTTLS 加密连接（默认开启，适用于 143 端口）。只有在可信网络中、服务器不支持 TLS 时才关闭——关闭后密码会以明文发送。"
+          },
+          "smtp_host": {
+            "label": "SMTP 服务器",
+            "help": "发件（出站）邮件服务器地址，例如 smtp.gmail.com。回复邮件经由该服务器发送。"
+          },
+          "smtp_port": {
+            "label": "SMTP 端口",
+            "help": "出站端口（默认 587，使用 STARTTLS；465 用于隐式 SSL）。"
+          },
+          "smtp_username": {
+            "label": "SMTP 用户名",
+            "help": "用于 SMTP 认证的账号，通常是完整的邮箱地址。"
+          },
+          "smtp_password": {
+            "label": "SMTP 密码",
+            "help": "SMTP 密码或应用专用密码。仅保存在服务端，不会回传给浏览器。"
+          },
+          "smtp_use_tls": {
+            "label": "SMTP STARTTLS",
+            "help": "使用 STARTTLS 升级 SMTP 连接（默认开启，适用于 587 端口）。实际使用中与 SMTP SSL 互斥。"
+          },
+          "smtp_use_ssl": {
+            "label": "SMTP SSL",
+            "help": "通过隐式 TLS 连接 SMTP，例如 465 端口（默认关闭）。实际使用中与 STARTTLS 互斥。"
+          },
+          "verify_tls": {
+            "label": "校验 TLS 证书",
+            "help": "验证邮件服务器的 TLS 证书与主机名（推荐）。仅在使用自签名或内部 CA 服务器时关闭。"
+          },
+          "from_address": {
+            "label": "发件地址",
+            "help": "回复邮件的发件地址。留空则沿用 SMTP 用户名。"
+          },
+          "auto_reply_enabled": {
+            "label": "自动回复",
+            "help": "对入站邮件自动回复。智能体主动发起的发送不受影响。"
+          },
+          "poll_interval_seconds": {
+            "label": "轮询间隔（秒）",
+            "help": "检查 IMAP 新邮件的频率（默认 30，最小 5）。"
+          },
+          "mark_seen": {
+            "label": "标记为已读",
+            "help": "将已处理的邮件在邮箱中标记为已读。"
+          },
+          "post_action": {
+            "label": "处理后动作",
+            "help": "已处理邮件的处理方式：delete（删除）、move（移动到其他文件夹），留空表示保留。"
+          },
+          "post_action_move_mailbox": {
+            "label": "移动到文件夹",
+            "help": "“处理后动作”选择 move 时使用的目标文件夹。"
+          },
+          "post_action_expunge": {
+            "label": "删除后彻底清除",
+            "help": "删除邮件后执行 expunge 彻底清除，而不是仅保留删除标记。"
+          },
+          "post_action_ignore_skipped": {
+            "label": "跳过自身与已过滤邮件",
+            "help": "被跳过的邮件（自身邮件及被名单过滤的发件人）不受处理后动作影响（默认开启）。"
+          },
+          "max_body_chars": {
+            "label": "正文最大字符数",
+            "help": "每封邮件正文截断到该字符数（默认 12000）。"
+          },
+          "subject_prefix": {
+            "label": "回复主题前缀",
+            "help": "在回复主题前添加的前缀（默认 \"Re: \"）。"
+          },
+          "allow_from": {
+            "label": "允许的发件人",
+            "help": "可选的发件人邮箱白名单，只有名单内的地址可以与智能体对话（\"*\" 表示允许所有人）。未配对的发件人会收到一条包含配对码的回复。"
+          },
+          "verify_dkim": {
+            "label": "校验 DKIM",
+            "help": "要求 Authentication-Results 头中 dkim=pass。同时关闭 DKIM 与 SPF 校验将接受伪造的 From 头。"
+          },
+          "verify_spf": {
+            "label": "校验 SPF",
+            "help": "要求 Authentication-Results 头中 spf=pass。同时关闭 DKIM 与 SPF 校验将接受伪造的 From 头。"
+          },
+          "allowed_attachment_types": {
+            "label": "允许的附件类型",
+            "help": "入站附件的 MIME 白名单，例如 application/pdf 或 image/*。留空表示禁用附件。"
+          },
+          "max_attachment_size": {
+            "label": "附件大小上限（字节）",
+            "help": "单个附件允许的最大字节数（默认 2000000，即 2 MB）。"
+          },
+          "max_attachments_per_email": {
+            "label": "单封邮件附件数上限",
+            "help": "一封邮件最多接受的附件数量（默认 5）。"
+          }
+        },
+        "websocket": {
+          "host": {
+            "label": "绑定地址",
+            "help": "WebSocket 服务监听的本地地址（默认 127.0.0.1，仅本机可访问）。使用 0.0.0.0 或 :: 等通配地址会把服务暴露到所有网卡，除非设置了 token 或 token 下发密钥，否则会被拒绝。"
+          },
+          "port": {
+            "label": "绑定端口",
+            "help": "WebSocket 服务监听的本地端口（默认 8765）。设置 Unix socket 路径时此项被忽略。"
+          },
+          "unix_socket_path": {
+            "label": "Unix socket 路径",
+            "help": "可选的绝对路径。设置后服务监听该 Unix socket，而不再使用上方的主机和端口。"
+          },
+          "path": {
+            "label": "升级路径",
+            "help": "客户端连接使用的 WebSocket 升级路径（默认 /），必须以“/”开头。"
+          },
+          "token": {
+            "label": "静态令牌",
+            "help": "握手时通过 token 查询参数校验的共享密钥。仅保存在服务端，不会回传给浏览器。"
+          },
+          "token_issue_path": {
+            "label": "令牌下发路径",
+            "help": "以 JSON 形式下发短期一次性令牌的 HTTP GET 路由。必须与升级路径不同。"
+          },
+          "token_issue_secret": {
+            "label": "令牌下发密钥",
+            "help": "令牌下发路由要求的 Bearer 密钥（Authorization: Bearer 或 X-Vibe-Trading-Auth）。仅保存在服务端，不会回传给浏览器。"
+          },
+          "token_ttl_s": {
+            "label": "令牌有效期（秒）",
+            "help": "令牌下发路由签发令牌的有效期，单位为秒（30–86400，默认 300）。"
+          },
+          "websocket_requires_token": {
+            "label": "强制令牌",
+            "help": "拒绝未携带有效静态令牌或签发令牌的握手（默认开启）。"
+          },
+          "allow_from": {
+            "label": "允许的客户端",
+            "help": "可选的客户端 ID 白名单，只有名单内的客户端可以连接（\"*\" 表示允许所有人，默认）。"
+          },
+          "streaming": {
+            "label": "流式输出",
+            "help": "将模型输出增量实时推送给已连接的客户端。"
+          },
+          "max_message_bytes": {
+            "label": "单条消息上限（字节）",
+            "help": "允许的最大入站帧字节数（默认 37748736；范围 1024–41943040）。"
+          },
+          "ping_interval_s": {
+            "label": "Ping 间隔（秒）",
+            "help": "心跳 ping 的发送间隔秒数（5–300，默认 20）。"
+          },
+          "ping_timeout_s": {
+            "label": "Ping 超时（秒）",
+            "help": "等待 ping 响应的秒数，超时后断开连接（5–300，默认 20）。"
+          },
+          "ssl_certfile": {
+            "label": "TLS 证书路径",
+            "help": "WSS 使用的服务端 PEM 证书路径。证书与私钥需成对设置或同时留空；这里是服务器上的文件路径，不是上传的材料。"
+          },
+          "ssl_keyfile": {
+            "label": "TLS 私钥路径",
+            "help": "WSS 使用的服务端 PEM 私钥路径。证书与私钥需成对设置或同时留空；这里是服务器上的文件路径，不是上传的材料。"
+          }
+        }
+      },
+      "guides": {
+        "dingtalk": {
+          "title": "钉钉配置指南",
+          "intro": "钉钉机器人使用 Stream 模式，无需公网回调地址。",
+          "step1": "在钉钉开发者后台（open-dev.dingtalk.com）创建应用。",
+          "step2": "为应用添加机器人能力，并开启 Stream 模式。",
+          "step3": "将应用的 AppKey 填入 Client ID，AppSecret 填入 Client Secret。",
+          "step4": "发布应用，使其对组织内成员可用。",
+          "step5": "回到这里点击“测试连接”，然后启用渠道。",
+          "docsLabel": "打开钉钉开发者后台"
+        },
+        "qq": {
+          "title": "QQ 配置指南",
+          "intro": "QQ 机器人通过官方 botpy SDK 以 WebSocket 连接，无需公网回调地址。",
+          "step1": "在 QQ 开放平台（q.qq.com）注册并创建机器人。",
+          "step2": "在机器人的开发设置页面复制 AppID 与 AppSecret。",
+          "step3": "将其填入上方的 AppID 与 AppSecret 字段。",
+          "step4": "按平台的沙箱/发布规则，将机器人加入 QQ 群或与其私聊。",
+          "step5": "回到这里点击“测试连接”，然后启用渠道。",
+          "docsLabel": "打开 QQ 开放平台"
+        },
+        "email": {
+          "title": "邮箱配置指南",
+          "intro": "邮箱渠道通过 IMAP 轮询收件、通过 SMTP 发送回复，因此无需公网回调地址。",
+          "step1": "从邮箱服务商处获取 IMAP 与 SMTP 的服务器地址和端口（通常是 imap.<服务商> 的 993 端口和 smtp.<服务商> 的 587 端口）。",
+          "step2": "在邮箱设置中开启 IMAP 与 SMTP 服务；如果服务商要求（Gmail、QQ 邮箱等启用两步验证的邮箱），请创建应用专用密码。",
+          "step3": "填写上方的 IMAP 与 SMTP 凭据，设置发件地址，并把你自己的邮箱加入“允许的发件人”。",
+          "step4": "点击“测试连接”，它会依次探测 IMAP 登录、邮箱文件夹和 SMTP 登录。",
+          "step5": "勾选“已授予同意”并启用渠道，自动回复即可送达通过 DKIM/SPF 校验的发件人。",
+          "docsLabel": "打开 Vibe-Trading 文档"
+        },
+        "websocket": {
+          "title": "WebSocket 配置指南",
+          "intro": "WebSocket 渠道自带本地服务，客户端直接通过 WebSocket 地址连接，因此无需公网回调地址。",
+          "step1": "选择绑定地址：仅本机使用可保持 127.0.0.1；如需对外暴露可设置 0.0.0.0 或 ::，此时必须配置令牌或令牌下发密钥。",
+          "step2": "设置静态令牌，或配置令牌下发路径及其 Bearer 密钥，让客户端获取短期令牌。",
+          "step3": "客户端使用 ws://host:port/path?client_id=...&token=... 连接。",
+          "step4": "渠道运行中保存会热切换服务：已连接的客户端（包括本 Web UI 聊天）会短暂断开并自动重连。",
+          "step5": "点击“测试连接”，它会在本地校验 SSL 证书/私钥与地址可用性。",
+          "docsLabel": "打开 Vibe-Trading 文档"
+        }
+      }
     },
     "generation": "生成设置",
     "dataSourceSettings": "数据源设置",
     "dataSourceSettingsDesc": "配置回测引擎和研究智能体使用的可选市场数据凭证。",
+    "sourcePriority": {
+      "title": "数据源优先级",
+      "description": "控制智能体自动取数时各市场数据源的尝试顺序;显式指定的数据源不受影响。",
+      "marketLabel": "市场",
+      "badgeDefault": "默认",
+      "badgeCustom": "自定义",
+      "customMarkets": "自定义 · {{count}}",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "resetToDefault": "恢复默认",
+      "invalidOverrideWarning": "{{envVar}} 已保存的覆盖值无效(必须是同一组数据源的重排),当前仍按默认顺序。",
+      "noMarkets": "没有注册任何市场数据源。",
+      "howItWorksTitle": "工作方式",
+      "howItWorks": "自动识别的标的按列表自上而下依次尝试,失败的源会顺延到下一个。保存后立即生效,无需重启。",
+      "caliberCaveat": "口径提示:各数据源的复权口径不同 — 例如 Yahoo 返回未复权原始 OHLC,腾讯/东方财富/Tushare 返回前复权价 — 重排市场链可能因此改变回测数值。",
+      "markets": {
+        "a_share": "A股",
+        "us_equity": "美股",
+        "hk_equity": "港股",
+        "india_equity": "印度股票",
+        "kr_equity": "韩国股票",
+        "ca_equity": "加拿大股票",
+        "vietnam_equity": "越南股票",
+        "ar_equity": "阿根廷股票",
+        "uk_equity": "英国股票",
+        "index": "指数",
+        "crypto": "加密货币",
+        "futures": "期货",
+        "fund": "基金",
+        "macro": "宏观经济",
+        "forex": "外汇"
+      }
+    },
     "tushareToken": "Tushare Token",
+    "gildataToken": "聚源（Gildata）Token",
     "clearTushareToken": "清除已保存的 Tushare Token",
+    "clearGildataToken": "清除已保存的聚源 Token",
     "saveDataSourceSettings": "保存数据源设置",
     "baostock": "BaoStock",
     "loadLlmSettingsFailed": "加载 LLM 设置失败: {{message}}",
@@ -390,10 +804,12 @@
     "llmSettingsSaved": "LLM 设置已保存",
     "saveLlmSettingsFailed": "保存 LLM 设置失败: {{message}}",
     "dataSourceSettingsSaved": "数据源设置已保存",
+    "desktopCredentialRestarting": "凭据已加密，正在重启本地服务…",
     "saveDataSourceSettingsFailed": "保存数据源设置失败: {{message}}",
     "configured": "已配置",
     "keepCurrentKey": "留空以保留当前密钥",
     "providerUsesOauth": "该提供商使用 OAuth。请运行: {{command}}",
+    "providerUsesManagedAuth": "该提供商自行管理身份验证。请运行: {{command}}",
     "noApiKeyRequired": "此提供商不需要 API 密钥。",
     "keepCurrentToken": "留空以保留当前 Token",
     "iwencaiApiKey": "iWenCai API 密钥",
@@ -410,8 +826,10 @@
     "unknownError": "未知错误",
     "providerChangeHint": "切换服务商后，推荐的模型和接口地址会自动更新。",
     "oauth": "OAuth",
+    "authentication": "身份验证",
     "apiKey": "API 密钥",
-    "tushareTokenDesc": "用于中国 A 股、期货、基金和宏观数据。没填的话会自动改用 AKShare 的免费数据。"
+    "tushareTokenDesc": "用于中国 A 股、期货、基金和宏观数据。没填的话会自动改用 AKShare 的免费数据。",
+    "gildataTokenDesc": "可选的恒生聚源 A 股数据源。配置后会以日线前复权数据加入 A 股回退链末尾。"
   },
   "qveris": {
     "title": "QVeris 工具市场",
@@ -484,6 +902,9 @@
     "executablesNotAllowed": "不允许上传可执行文件和压缩包",
     "fileSizeExceeds": "文件大小超过 50 MB 限制",
     "uploaded": "已上传：{{filename}}",
+    "attachmentLimit": "最多可添加 {{count}} 个附件",
+    "dropFiles": "拖放文件到这里",
+    "removeAttachment": "移除 {{filename}}",
     "uploadFailed": "上传失败：{{error}}",
     "failedToSend": "发送消息失败，请重试。",
     "failedToContinue": "继续目标失败，请重试。",
@@ -495,7 +916,6 @@
     "haltConnectorTitle": "立即停止连接器活动",
     "haltConnector": "停止连接器",
     "moreOptions": "更多选项",
-    "uploadPdf": "上传 PDF 文档",
     "researchGoal": "研究目标",
     "agentSwarm": "智能体团队",
     "attachmentChip": "附件",
@@ -522,7 +942,8 @@
       "failed": "失败",
       "steps": "{{count}} 个步骤",
       "continue": "继续",
-      "reattach": "重新连接"
+      "reattach": "重新连接",
+      "checkingFigures": "正在核对答案中的数字（第 {{round}} 轮）…"
     },
     "resumeConnector": "恢复连接器",
     "resumeConnectorTitle": "清除熔断开关并恢复连接器活动",
@@ -534,8 +955,30 @@
     "runNotFound": "运行记录未找到",
     "runNotFoundDesc": "运行目录可能已被删除，或者浏览器未配置 API 访问。如果远程访问，请检查设置中的 API 认证密钥是否已设置。",
     "goBack": "返回",
+    "showFullPrompt": "显示完整提示词",
+    "showLessPrompt": "收起",
     "chart": "图表",
     "trades": "交易",
+    "factor": "因子研究",
+    "studio": "组合工作室",
+    "riskXray": "风险透视",
+    "rebalanceNotes": "调仓笔记",
+    "hhi": "HHI 集中度",
+    "effectiveN": "有效持仓数",
+    "annualizedVol": "年化波动",
+    "maxDrawdown": "最大回撤",
+    "symbol": "标的",
+    "weight": "权重",
+    "rebalanceCount": "目标调仓次数（请求）",
+    "rebalanceExecuted": "已执行调仓成交数",
+    "rebalanceRealizedTurnover": "实际调仓换手",
+    "turnoverMean": "平均换手（请求）",
+    "turnoverMax": "最大换手（请求）",
+    "largestRebalance": "最大一次调仓",
+    "date": "日期",
+    "turnover": "换手率",
+    "entries": "新进",
+    "exits": "退出",
     "validation": "验证",
     "runCard": "运行卡片",
     "code": "代码",
@@ -543,7 +986,6 @@
     "downloadMetricsCsv": "下载指标 CSV",
     "noChartData": "暂无图表数据",
     "noChartDataDesc": "这次运行没有保存价格数据，所以没有图表；下面的指标依然有效。",
-    "symbol": "标的",
     "showOnly": "仅显示",
     "addSymbol": "添加标的",
     "loadAll": "加载全部",
@@ -574,6 +1016,8 @@
     "noBacktestSummary": "暂无回测摘要记录。",
     "noReproducibilityHashes": "暂无可复现性哈希记录。",
     "noScalarMetrics": "暂无标量指标记录。",
+    "noStructuredMetrics": "未记录结构化指标。",
+    "structuredMetrics": "结构化指标",
     "noValidationPayload": "暂无验证数据记录。",
     "noArtifactChecksums": "暂无制品校验和记录。",
     "noCodeFiles": "暂无代码文件。",
@@ -593,7 +1037,94 @@
     "sideSell": "卖出",
     "copyCode": "复制",
     "codeCopied": "代码已复制",
-    "codeLines": "{{count}} 行"
+    "codeLines": "{{count}} 行",
+    "tearsheet": "绩效报告",
+    "monthlyReturns": "月度收益",
+    "annualReturns": "年度收益",
+    "topDrawdowns": "主要回撤",
+    "tearsheetYear": "全年",
+    "noTearsheetData": "净值数据不足，无法生成绩效报告。",
+    "ddRank": "#",
+    "ddDepth": "回撤深度",
+    "ddPeak": "高点",
+    "ddTrough": "低点",
+    "ddRecovery": "恢复",
+    "ddPeakToTrough": "高点→低点",
+    "ddTroughToRecovery": "低点→恢复",
+    "ddNotRecovered": "未恢复",
+    "ddDays": "{{count}} 天",
+    "dashboard": "研究仪表盘",
+    "positions": {
+      "tab": "持仓",
+      "weightDistribution": "权重分布",
+      "sectorDistribution": "行业分布",
+      "weightEvolution": "权重演变",
+      "pie": "饼图",
+      "treemap": "矩形树图",
+      "cash": "现金",
+      "rest": "其他",
+      "restLong": "其他（多头）",
+      "restShort": "其他（空头）",
+      "basisGross": "切片为 |权重|（保证金 ÷ 净值）；现金为未占用部分，满仓或杠杆时不显示。",
+      "basisNet": "净敞口：带符号权重 ÷ 净值，负值为净空头。",
+      "short": "做空",
+      "resolveIndustries": "解析行业",
+      "resolving": "解析中...",
+      "resolveFailed": "行业解析失败",
+      "retry": "重试",
+      "asOf": "截至 {{date}}",
+      "noPositions": "该运行未记录持仓权重。",
+      "holdingsCount": "{{count}} 个持仓",
+      "assetClass": {
+        "a_share": "A股",
+        "us_equity": "美股",
+        "hk_equity": "港股",
+        "ca_equity": "加股",
+        "kr_equity": "韩股",
+        "india_equity": "印股",
+        "crypto": "加密货币",
+        "futures": "期货",
+        "forex": "外汇",
+        "ar_equity": "阿根廷股",
+        "uk_equity": "英股",
+        "vietnam_equity": "越股",
+        "other": "其他"
+      }
+    },
+    "attribution": "归因分析",
+    "attrBenchmark": "基准",
+    "attrPortfolio": "组合",
+    "attrActive": "超额",
+    "attrAutoEqualWeight": "自动等权",
+    "attrNoBenchmark": "未配置基准",
+    "attrModeSymbol": "Brinson 模式：按标的",
+    "attrModeAssetClass": "Brinson 模式：按资产类别",
+    "attrModeInvestedCash": "Brinson 模式：按已投资现金",
+    "attrSector": "板块",
+    "attrPortfolioWeight": "组合权重",
+    "attrBenchmarkWeight": "基准权重",
+    "attrPortfolioReturn": "组合收益",
+    "attrBenchmarkReturn": "基准收益",
+    "attrAllocation": "配置效应",
+    "attrSelection": "选择效应",
+    "attrInteraction": "交互效应",
+    "attrTotal": "合计",
+    "attrBrinsonTitle": "Brinson 归因",
+    "attrWaterfallTitle": "收益瀑布图",
+    "attrNoBrinson": "本次运行无 Brinson 归因数据。",
+    "attrAlpha": "年化 Alpha",
+    "attrBeta": "Beta",
+    "attrTStat": "t 统计量：{{value}}",
+    "attrRSquared": "R²",
+    "attrInformationRatio": "信息比率",
+    "attrTrackingError": "跟踪误差",
+    "attrNoFactor": "本次运行无因子归因数据。",
+    "attrRollingTitle": "滚动 Beta 与 Alpha",
+    "attrRollingWindow": "{{count}} 期滚动窗口",
+    "attrCumulativeTitle": "累计收益",
+    "attrLoading": "加载归因数据…",
+    "attrError": "加载归因数据失败。",
+    "attrNoData": "本次运行无归因数据。"
   },
   "compare": {
     "title": "策略对比",
@@ -647,6 +1178,112 @@
     "regimeFused": "融合期 (FUSED)",
     "regimeEnterThreshold": "进入阈值",
     "regimeExitThreshold": "退出阈值"
+  },
+  "options": {
+    "title": "期权实验室",
+    "subtitle": "策略构建器、到期损益、标的价 × 隐含波动率情景、组合希腊值与美股实时期权链。",
+    "disclaimer": "仅供研究参考。理论定价与情景结果为模型估算，不构成投资建议。",
+    "errorGeneric": "分析失败",
+    "presets": {
+      "label": "预设策略",
+      "longCall": "买入看涨期权",
+      "longPut": "买入看跌期权",
+      "bullCallSpread": "牛市看涨价差",
+      "bearPutSpread": "熊市看跌价差",
+      "bullPutSpread": "牛市看跌价差",
+      "bearCallSpread": "熊市看涨价差",
+      "longStraddle": "买入跨式组合",
+      "longStrangle": "买入宽跨式组合",
+      "ironCondor": "铁鹰式组合",
+      "ironButterfly": "铁蝴蝶式组合",
+      "callButterfly": "看涨蝴蝶式组合",
+      "ratioCallSpread": "看涨比率价差"
+    },
+    "builder": {
+      "title": "策略构建器",
+      "legs": "期权腿",
+      "type": "类型",
+      "call": "看涨",
+      "put": "看跌",
+      "strike": "行权价",
+      "qty": "数量",
+      "premium": "权利金",
+      "premiumHint": "权利金留空 = 由引擎按 Black-Scholes 定价",
+      "qtyHint": "正数 = 买入（多头），负数 = 卖出（空头）",
+      "addLeg": "添加期权腿",
+      "removeLeg": "删除期权腿",
+      "parameters": "参数",
+      "entrySpot": "入场标的价",
+      "expiryDays": "到期天数",
+      "volatility": "波动率（%）",
+      "riskFreeRate": "无风险利率（%）",
+      "multiplier": "合约乘数",
+      "multiplierHint": "100 = 美股标准合约",
+      "commissionRate": "佣金率（%）",
+      "invalidHint": "请检查输入：标的价与行权价需为正数，数量需为非零整数，波动率需为正数。",
+      "analyzing": "分析中…"
+    },
+    "metrics": {
+      "entryCost": "入场成本",
+      "debit": "支出",
+      "credit": "收入",
+      "flat": "持平",
+      "breakevens": "盈亏平衡点",
+      "maxProfit": "最大盈利",
+      "maxLoss": "最大亏损",
+      "unlimited": "无上限",
+      "none": "无"
+    },
+    "payoff": {
+      "title": "到期损益图",
+      "pnl": "损益",
+      "spot": "到期标的价",
+      "entrySpot": "现价",
+      "breakeven": "盈亏点",
+      "noData": "暂无损益数据——请先在上方构建策略。"
+    },
+    "greeks": {
+      "title": "组合希腊值",
+      "delta": "Delta",
+      "deltaDesc": "方向性敞口，相当于持有标的资产的股数。",
+      "gamma": "Gamma",
+      "gammaDesc": "标的资产每变动 1 美元，Delta 的变化量。",
+      "theta": "Theta",
+      "thetaDesc": "每日时间衰减（美元）。为负表示持仓每天流失价值。",
+      "vega": "Vega",
+      "vegaDesc": "隐含波动率每上升 1%，损益的变化（美元）。",
+      "rho": "Rho",
+      "rhoDesc": "利率每上升 1%，损益的变化（美元）。"
+    },
+    "scenario": {
+      "title": "标的价 × 隐含波动率情景矩阵",
+      "spotAxis": "到期标的价",
+      "ivAxis": "隐含波动率",
+      "pnl": "损益",
+      "noData": "未返回情景矩阵数据。"
+    },
+    "chain": {
+      "title": "美股期权链",
+      "ticker": "代码",
+      "expiration": "到期日",
+      "load": "加载",
+      "loading": "加载期权链…",
+      "calls": "看涨期权",
+      "puts": "看跌期权",
+      "strike": "行权价",
+      "last": "最新价",
+      "bid": "买价",
+      "ask": "卖价",
+      "spread": "价差%",
+      "volume": "成交量",
+      "openInterest": "持仓量",
+      "iv": "隐波%",
+      "itm": "价内",
+      "atm": "平值",
+      "noData": "该选择下未返回合约。",
+      "errorTitle": "期权链不可用",
+      "retry": "重试"
+    }
   },
   "alphaZoo": {
     "title": "Alpha 因子库",
@@ -840,6 +1477,10 @@
     "running": "运行中",
     "halted": "已停止",
     "authorized": "已授权",
+    "sdkConnected": "已连接",
+    "sdkReadOnlyNote": "直连 SDK 连接器 · 只读配置文件。实盘交易需要 trade 配置文件和已提交的授权。",
+    "sdkCredentialsRequired": "请为此连接器配置 API 凭证（参见 Runtime 页面）。",
+    "sdkConnectionError": "连接检查失败。请在 Runtime 页面验证凭证。",
     "notConnected": "未连接",
     "connectProfile": "连接此档案以启动连接器",
     "authorizeNote": "在 OAuth 授权成功且提交交易授权（mandate）之前，连接器通道保持只读。",
@@ -915,7 +1556,15 @@
     "maxPerOrder": "每笔 ≤{{amount}}",
     "expiresOn": "到期日：{{date}}",
     "accountSummary": "{{broker}} · {{type}} 账户 · 资金来源：{{fundedBy}}",
-    "adjustRequestMessage": "针对授权提案「{{label}}」（选项 {{ordinal}}）的调整：{{text}}"
+    "adjustRequestMessage": "针对授权提案「{{label}}」（选项 {{ordinal}}）的调整：{{text}}",
+    "accountLoading": "正在读取券商账户…",
+    "accountLoadFailed": "无法读取券商账户：{{error}}",
+    "accountLabel": "该授权可交易的账户",
+    "accountChoose": "选择账户",
+    "accountDefault": " · 券商默认",
+    "accountDeactivated": " · 已停用",
+    "accountNotAgentic": " · 不允许智能体交易",
+    "accountHint": "智能体只会交易这个账户，系统不会替你预选。"
   },
   "messageBubble": {
     "elapsedTime": "本次回复总耗时",
@@ -1110,5 +1759,239 @@
     "update_research_goal_status": "更新目标状态",
     "web_search": "搜索网页",
     "write_file": "生成代码"
+  },
+  "runDashboard": {
+    "eyebrow": "量化研究 · 策略回测",
+    "noBacktestData": "该次运行没有可供绘图的回测数据",
+    "noBacktestDataStudioHint": "这看起来是一次投资组合/风险分析——请在 Studio 标签页查看具体数值。",
+    "engine": "回测引擎",
+    "portfolio": "投资组合",
+    "systematicStrategy": "系统化交易策略",
+    "strategyInferred": "推断",
+    "strategyMacd": "MACD 趋势策略",
+    "strategyRsi": "RSI 择时策略",
+    "strategyMomentum": "动量策略",
+    "strategyMeanReversion": "均值回归策略",
+    "strategyBreakout": "突破策略",
+    "strategyMaCrossover": "{{fast}}/{{slow}} 日均线交叉策略",
+    "seriesStrategy": "策略",
+    "seriesBenchmark": "基准",
+    "seriesDrawdown": "回撤",
+    "seriesRollingSharpe": "滚动 Sharpe（20）",
+    "kpiTotalReturn": "总收益率",
+    "kpiAnnualReturn": "年化收益率",
+    "kpiMaxDrawdown": "最大回撤",
+    "kpiWinRate": "胜率",
+    "kpiTrades": "交易次数",
+    "figEquityTitle": "净值与基准",
+    "figEquityNote": "比较策略与基准的累计收益路径。",
+    "figRiskTitle": "回撤与滚动风险",
+    "figRiskNote": "观察亏损加深和风险调整后表现发生变化的时点。",
+    "figPnlTitle": "已实现成交盈亏",
+    "figPnlNote": "展示已完成交易带来的实际盈亏。",
+    "figLedgerTitle": "成交明细",
+    "figLedgerNote": "按时间查看最近 100 笔交易明细。",
+    "figMetricsTitle": "绩效指标",
+    "figMetricsNote": "汇总策略的收益、风险与交易统计。",
+    "noTrades": "没有成交记录。",
+    "colTime": "时间",
+    "colSymbol": "代码",
+    "colSide": "方向",
+    "colPrice": "价格",
+    "colQty": "数量",
+    "colPnl": "盈亏",
+    "colReason": "原因"
+  },
+  "factor": {
+    "title": "因子研究",
+    "selectFactor": "选择因子",
+    "icSeries": "日度 IC",
+    "icMa": "20 期均线",
+    "icStats": "IC 统计",
+    "icMean": "IC 均值",
+    "icStd": "IC 标准差",
+    "ir": "IR",
+    "icPositiveRatio": "IC>0 占比",
+    "icCount": "IC 样本数",
+    "longShortSpread": "多空收益差",
+    "nGroups": "分组数",
+    "quantileEquity": "分位数组合净值",
+    "quantileEquityNote": "Group_1 为因子值最低组，Group_N 为因子值最高组；首尾分位组的净值差距衡量因子的选股能力。",
+    "correlation": "IC 相关性",
+    "correlationNote": "各因子日度 IC 时间序列两两之间的相关系数；高度相关的因子携带的信息高度重叠。",
+    "insufficientOverlap": "各因子 IC 序列的共同日期重叠不足，无法计算 IC 相关性。",
+    "loading": "正在加载因子分析结果…",
+    "error": "加载因子分析结果失败",
+    "noFactorData": "本次运行没有可用的因子分析结果。"
+  },
+  "portfolio": {
+    "page": {
+      "badge": "本机只读 · 多账户",
+      "title": "持仓总览",
+      "subtitle": "把已启用的只读连接汇总成一份估值。读取失败的账户会标记为错误，并且不计入合计。",
+      "fxFresh": "USD/CNY {{rate}} · 实时汇率",
+      "fxCached": "USD/CNY {{rate}} · 缓存汇率",
+      "manageAccounts": "管理账户",
+      "exportCsv": "导出 CSV",
+      "refreshAll": "刷新全部账户",
+      "refreshing": "正在刷新",
+      "warningsTitle": "数据说明",
+      "emptyTitle": "还没有持仓快照",
+      "emptyBody": "至少添加一个只读账户后即可开始汇总。",
+      "emptyAction": "添加账户",
+      "errorLoad": "无法读取持仓",
+      "errorRefresh": "刷新失败",
+      "errorReconnect": "账户重新连接失败",
+      "errorReconnectTimeout": "等待浏览器授权超时，请重新连接并及时完成券商授权",
+      "errorSaveSettings": "无法保存持仓设置",
+      "errorExport": "导出失败"
+    },
+    "metrics": {
+      "total": "总资产",
+      "change": "今日资产变化",
+      "changeNote": "包含行情波动与入金、出金",
+      "coverage": "估值覆盖率",
+      "coverageNote": "已定价 {{priced}} · 现金 {{cash}}",
+      "lastComplete": "最后一次完整更新",
+      "excluded": "{{count}} 个账户读取失败，未计入该合计"
+    },
+    "allocation": {
+      "byAccount": "按账户分布",
+      "byHolding": "按持仓标的分布",
+      "center": "持仓占比",
+      "other": "其他持仓",
+      "cash": "现金",
+      "unpriced": "未定价 / 其他",
+      "cashUnpriced": "现金 / 未定价"
+    },
+    "accounts": {
+      "title": "账户状态",
+      "hint": "点击账户卡可筛选下方持仓",
+      "clearFilter": "清除筛选",
+      "positions": "{{count}} 项持仓",
+      "fresh": "读取成功",
+      "failed": "读取失败 — 未计入合计",
+      "lastSuccess": "上一次成功读取于 {{time}}",
+      "noSuccess": "尚未成功读取过",
+      "reconnect": "重新连接",
+      "retryRead": "重试读取"
+    },
+    "holdings": {
+      "title": "持仓明细",
+      "count": "{{count}} 项持仓",
+      "search": "搜索账户、标的或市场",
+      "colBroker": "账户",
+      "colSymbol": "标的",
+      "colType": "类别",
+      "colQuantity": "数量",
+      "colCostPrice": "成本 / 现价",
+      "colValue": "市值",
+      "colWeight": "占比",
+      "colPnl": "未实现盈亏",
+      "colData": "数据状态",
+      "priced": "已定价",
+      "unpriced": "未定价"
+    },
+    "history": {
+      "title": "资产历史",
+      "hint": "只显示完整快照；资产变化可能包含入金和出金。",
+      "count": "{{count}} 个完整快照",
+      "empty": "完成首次完整刷新后开始积累"
+    },
+    "credentials": {
+      "title": "连接与凭证",
+      "readOnlyProfile": "只读连接模板",
+      "writableProfile": "可写连接模板",
+      "renewalAutomatic": "连接器自动续期",
+      "renewalSession": "依赖本地会话",
+      "renewalProvider": "由服务商管理有效期"
+    },
+    "status": {
+      "title": "正在依次读取已启用账户",
+      "reading": "读取中",
+      "done": "完成",
+      "failed": "失败",
+      "waiting": "等待"
+    },
+    "env": {
+      "live": "实盘",
+      "paper": "模拟"
+    },
+    "compatibility": {
+      "native": "专用适配",
+      "contractTested": "契约测试通过",
+      "experimental": "实验性"
+    },
+    "editor": {
+      "title": "管理持仓账户",
+      "subtitle": "这里只保存账户选择和显示偏好，不保存密钥。",
+      "close": "关闭",
+      "currency": "主要显示货币",
+      "selected": "已添加账户",
+      "selectedHint": "用上下箭头调整显示顺序。",
+      "enableAccount": "启用账户",
+      "accountLabel": "账户名称",
+      "moveUp": "上移",
+      "moveDown": "下移",
+      "removeAccount": "删除账户",
+      "includeCash": "计入该账户现金",
+      "noAccounts": "还没有添加账户",
+      "addTitle": "添加本地只读连接",
+      "addHint": "只能选择已经在这台电脑上创建的连接。",
+      "openConnections": "打开连接中心",
+      "chooseConnection": "选择连接…",
+      "noConnections": "没有可添加的连接",
+      "add": "添加",
+      "footerHint": "保存后将刷新已启用账户。",
+      "cancel": "取消",
+      "save": "保存并刷新",
+      "saving": "保存中"
+    },
+    "connections": {
+      "title": "本地连接中心",
+      "subtitle": "连接定义保存在本机；密钥只进入系统钥匙串。",
+      "close": "关闭连接中心",
+      "createTitle": "创建账户连接",
+      "createHint": "模板是公开的；连接只属于这台电脑。",
+      "profile": "只读连接模板",
+      "chooseProfile": "选择模板…",
+      "localId": "本地连接 ID",
+      "displayName": "显示名称",
+      "displayNamePlaceholder": "我的主账户",
+      "create": "创建本地连接",
+      "created": "本地连接已创建。",
+      "listTitle": "这台电脑上的连接",
+      "listCount": "{{count}} 个连接",
+      "empty": "还没有本地连接",
+      "codexTitle": "让 Codex 接入新券商",
+      "codexBody": "让 Codex 运行 connector init，按券商官方文档补全只读 adapter，通过 validate 后再 install。插件安装在本机目录，不进入项目仓库。",
+      "readOnly": "结构只读",
+      "credentialSaved": "已保存",
+      "optional": "（可选）",
+      "authType": "认证方式",
+      "dependency": "本机依赖",
+      "oauthNote": "使用 OAuth；需要时通过重新连接完成授权。",
+      "localNote": "该连接使用本机应用或网关会话；请按上方提示启动后测试。",
+      "saveVault": "保存到钥匙串",
+      "savedVault": "凭证已保存到系统钥匙串。",
+      "test": "测试连接",
+      "testOk": "{{label}} 连接正常。",
+      "testFailed": "{{label}} 测试失败：{{error}}",
+      "unknownTestError": "连接器返回了未知错误。",
+      "delete": "删除",
+      "configured": "所需凭证已配置",
+      "accountTitle": "账户",
+      "accountCurrent": "读取尾号 ····{{last4}} 的账户",
+      "accountNone": "尚未选择账户。选择之前，这个连接不会读取任何数据。",
+      "accountLoad": "选择账户",
+      "accountChange": "更换账户",
+      "accountEmpty": "这个登录下没有可用账户。",
+      "accountPicker": "这个登录可访问的账户",
+      "accountChoose": "选择账户",
+      "accountDefault": " · 券商默认",
+      "accountDeactivated": " · 已停用",
+      "accountSave": "使用这个账户",
+      "accountSaved": "账户已保存。"
+    }
   }
 }

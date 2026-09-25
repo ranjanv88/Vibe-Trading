@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backtest.models import TradeRecord
+from backtest.models import FillRecord, TradeRecord
 
 # ─── Annualisation factor mapping ───
 
@@ -24,10 +24,16 @@ _TRADING_DAYS = {
     # existing
     "tushare": 252, "yfinance": 252, "okx": 365, "akshare": 252, "ccxt": 365,
     "mootdx": 252, "futu": 252, "mt5": 260,
+    # tickerall serves the same broker forex/CFD feed as mt5 (hosted, no local
+    # terminal), so it mirrors mt5's 24x5 annualisation everywhere in this table.
+    "tickerall": 260,
     # crypto
     "binance": 365,
+    # Iranian crypto exchanges (24/7 markets, same annualisation as okx/ccxt)
+    "nobitex": 365, "wallex": 365,
     # A-share equity
     "baostock": 252, "tencent": 252, "eastmoney": 252, "sina": 252,
+    "gildata": 252,
     # US / international equity
     "yahoo": 252, "finnhub": 252, "alphavantage": 252, "tiingo": 252,
     "fmp": 252, "stooq": 252, "longbridge": 252,
@@ -54,12 +60,13 @@ _BARS_PER_DAY = {
             "tiingo": 390, "fmp": 390, "stooq": 390, "longbridge": 390,
             "local": 390, "qveris": 390,
             # A-share equity (4.0h session)
-            "tushare": 240, "akshare": 240, "baostock": 240, "tencent": 240,
+            "tushare": 240, "gildata": 240, "akshare": 240, "baostock": 240, "tencent": 240,
             "eastmoney": 240, "sina": 240, "mootdx": 240, "futu": 240,
             # crypto (24h)
             "okx": 1440, "ccxt": 1440, "binance": 1440,
+            "nobitex": 1440, "wallex": 1440,
             # forex/CFD (24h intraday)
-            "mt5": 1440,
+            "mt5": 1440, "tickerall": 1440,
             # Indian equity (6.25h session)
             "india_broker": 375,
             # Korean equity (6.5h session, 09:00-15:30 KST)
@@ -68,64 +75,74 @@ _BARS_PER_DAY = {
     "5m":  {"yfinance": 78,  "yahoo": 78,  "finnhub": 78,  "alphavantage": 78,
             "tiingo": 78,  "fmp": 78,  "stooq": 78,  "longbridge": 78,
             "local": 78, "qveris": 78,
-            "tushare": 48,  "akshare": 48,  "baostock": 48,  "tencent": 48,
+            "tushare": 48, "gildata": 48,  "akshare": 48,  "baostock": 48,  "tencent": 48,
             "eastmoney": 48,  "sina": 48,  "mootdx": 48,  "futu": 48,
             "okx": 288,  "ccxt": 288,  "binance": 288,
-            "mt5": 288,
+            "nobitex": 288,  "wallex": 288,
+            "mt5": 288, "tickerall": 288,
             "india_broker": 75,
             "pykrx": 78,
             },
     "15m": {"yfinance": 26,  "yahoo": 26,  "finnhub": 26,  "alphavantage": 26,
             "tiingo": 26,  "fmp": 26,  "stooq": 26,  "longbridge": 26,
             "local": 26, "qveris": 26,
-            "tushare": 16,  "akshare": 16,  "baostock": 16,  "tencent": 16,
+            "tushare": 16, "gildata": 16,  "akshare": 16,  "baostock": 16,  "tencent": 16,
             "eastmoney": 16,  "sina": 16,  "mootdx": 16,  "futu": 16,
             "okx": 96,   "ccxt": 96,   "binance": 96,
-            "mt5": 96,
+            "nobitex": 96,   "wallex": 96,
+            "mt5": 96, "tickerall": 96,
             "india_broker": 25,
             "pykrx": 26,
             },
     "30m": {"yfinance": 13,  "yahoo": 13,  "finnhub": 13,  "alphavantage": 13,
             "tiingo": 13,  "fmp": 13,  "stooq": 13,  "longbridge": 13,
             "local": 13, "qveris": 13,
-            "tushare": 8,   "akshare": 8,   "baostock": 8,   "tencent": 8,
+            "tushare": 8, "gildata": 8,   "akshare": 8,   "baostock": 8,   "tencent": 8,
             "eastmoney": 8,   "sina": 8,   "mootdx": 8,   "futu": 8,
             "okx": 48,   "ccxt": 48,   "binance": 48,
-            "mt5": 48,
+            "nobitex": 48,   "wallex": 48,
+            "mt5": 48, "tickerall": 48,
             "india_broker": 13,
             "pykrx": 13,
             },
     "1H":  {"yfinance": 7,   "yahoo": 7,   "finnhub": 7,   "alphavantage": 7,
             "tiingo": 7,   "fmp": 7,   "stooq": 7,   "longbridge": 7,
             "local": 7, "qveris": 7,
-            "tushare": 4,   "akshare": 4,   "baostock": 4,   "tencent": 4,
+            "tushare": 4, "gildata": 4,   "akshare": 4,   "baostock": 4,   "tencent": 4,
             "eastmoney": 4,   "sina": 4,   "mootdx": 4,   "futu": 4,
             "okx": 24,   "ccxt": 24,   "binance": 24,
-            "mt5": 24,
+            "nobitex": 24,   "wallex": 24,
+            "mt5": 24, "tickerall": 24,
             "india_broker": 7,
             "pykrx": 7,
             },
     "4H":  {"yfinance": 2,   "yahoo": 2,   "finnhub": 2,   "alphavantage": 2,
             "tiingo": 2,   "fmp": 2,   "stooq": 2,   "longbridge": 2,
             "local": 2, "qveris": 2,
-            "tushare": 1,   "akshare": 1,   "baostock": 1,   "tencent": 1,
+            "tushare": 1,   "gildata": 1,  "akshare": 1,   "baostock": 1,   "tencent": 1,
             "eastmoney": 1,   "sina": 1,   "mootdx": 1,   "futu": 1,
             "okx": 6,    "ccxt": 6,    "binance": 6,
-            "mt5": 6,
+            "nobitex": 6,    "wallex": 6,
+            "mt5": 6, "tickerall": 6,
             "india_broker": 2,
             "pykrx": 2,
             },
     "1D":  {"yfinance": 1,   "yahoo": 1,   "finnhub": 1,   "alphavantage": 1,
             "tiingo": 1,   "fmp": 1,   "stooq": 1,   "longbridge": 1,
             "local": 1, "qveris": 1,
-            "tushare": 1,   "akshare": 1,   "baostock": 1,   "tencent": 1,
+            "tushare": 1,   "gildata": 1,  "akshare": 1,   "baostock": 1,   "tencent": 1,
             "eastmoney": 1,   "sina": 1,   "mootdx": 1,   "futu": 1,
             "okx": 1,    "ccxt": 1,    "binance": 1,
-            "mt5": 1,
+            "nobitex": 1,    "wallex": 1,
+            "mt5": 1, "tickerall": 1,
             "india_broker": 1,
             "pykrx": 1,
             },
 }
+
+# Weekly and monthly bars count calendar periods, whatever the market's
+# trading days: every week and every month holds one bar (#1479).
+_CALENDAR_BARS_PER_YEAR = {"1W": 52, "1M": 12}
 
 # Runner/loaders also emit these aliases; map them onto the table keys above.
 _SOURCE_ALIASES = {"yahoo": "yfinance", "binance": "ccxt"}
@@ -136,10 +153,15 @@ def _normalize_interval(interval: str) -> str:
 
     Minute bars stay lowercase (``1m``); hour/day use the uppercase keys the
     table already stores (``1H`` / ``4H`` / ``1D``). Loaders accept both cases
-    after the interval-map fixes; annualisation must too.
+    after the interval-map fixes; annualisation must too. ``1M`` is a month and
+    is matched before the case fold, which would read it as a minute (#1479).
     """
     token = str(interval or "1D").strip()
+    if token == "1M":
+        return token
     lower = token.lower()
+    if lower == "1w":
+        return "1W"
     if lower in ("1m", "5m", "15m", "30m"):
         return lower
     if lower in ("1h", "4h", "1d"):
@@ -151,8 +173,9 @@ def calc_bars_per_year(interval: str = "1D", source: str = "tushare") -> int:
     """Number of bars per year for annualisation.
 
     Args:
-        interval: Bar size (1m / 5m / 15m / 30m / 1H / 4H / 1D), case-insensitive
-            like loaders accept (``1h`` → ``1H``, ``4h`` → ``4H``, ``1d`` → ``1D``).
+        interval: Bar size (1m / 5m / 15m / 30m / 1H / 4H / 1D / 1W / 1M),
+            case-insensitive like loaders accept (``1h`` → ``1H``, ``4h`` →
+            ``4H``, ``1d`` → ``1D``) except ``1M``, which is a month.
         source: Data source (any VALID_SOURCES entry). Defaults to 252 days, 1 bar/day
             when source is missing from the table.
 
@@ -160,11 +183,46 @@ def calc_bars_per_year(interval: str = "1D", source: str = "tushare") -> int:
         Bars per year.
     """
     interval_key = _normalize_interval(interval)
+    if interval_key in _CALENDAR_BARS_PER_YEAR:
+        return _CALENDAR_BARS_PER_YEAR[interval_key]
     source_key = str(source or "").strip().lower()
     source_key = _SOURCE_ALIASES.get(source_key, source_key)
     trading_days = _TRADING_DAYS.get(source_key, 252)
     bars_per_day = _BARS_PER_DAY.get(interval_key, {}).get(source_key, 1)
     return trading_days * bars_per_day
+
+
+def effective_bars_per_year(index: Any, default: int = 252) -> int:
+    """Bars per elapsed calendar year observed on ``index``.
+
+    The cross-market annualisation convention. A basket that spans markets has
+    no single per-market bar count — the runner signals that by passing
+    ``bars_per_year=None`` — so the factor is measured from the series itself
+    instead of assumed: bars observed divided by calendar years elapsed. Every
+    consumer of ``bars_per_year=None`` (portfolio metrics, risk x-ray, options
+    metrics, validation) resolves it through this one function, so the Sharpe,
+    the annualised volatility, and the validation Sharpe in a single run card
+    are annualised identically.
+
+    Args:
+        index: Datetime-like index of the series being annualised.
+        default: Returned when the span cannot be measured (empty index, or an
+            index whose difference carries no ``days``).
+
+    Returns:
+        Effective bars per year. A span shorter than one calendar day counts as
+        one year, matching how a single-bar curve annualises to its own return.
+    """
+    n = len(index)
+    if n == 0:
+        return default
+    try:
+        diff = index[-1] - index[0]
+    except (IndexError, TypeError):
+        return default
+    calendar_days = diff.days if hasattr(diff, "days") else 0
+    years = calendar_days / 365.25 if calendar_days > 0 else 1.0
+    return int(n / years) if years > 0 else default
 
 
 # ─── Sign-safe returns ───
@@ -430,6 +488,31 @@ def calc_trade_turnover_series(
     return (traded_margin / denominator).replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
+def calc_fill_turnover_series(
+    fills: List[FillRecord],
+    equity_curve: pd.Series,
+) -> pd.Series:
+    """Per-bar turnover from immutable execution-fill evidence."""
+    if equity_curve is None or equity_curve.empty:
+        return pd.Series(dtype=float)
+
+    traded_margin = pd.Series(0.0, index=equity_curve.index, dtype=float)
+    for fill in fills:
+        try:
+            margin_value = float(fill.margin)
+        except (TypeError, ValueError):
+            continue
+        if (
+            fill.timestamp in traded_margin.index
+            and np.isfinite(margin_value)
+            and margin_value > 0
+        ):
+            traded_margin.loc[fill.timestamp] += margin_value
+
+    denominator = 2.0 * equity_curve.abs().replace(0.0, np.nan)
+    return (traded_margin / denominator).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
 def calc_metrics(
     equity_curve: pd.Series,
     trades: List[TradeRecord],
@@ -463,11 +546,7 @@ def calc_metrics(
 
     # Calendar-day annualization for cross-market (bars_per_year=None)
     if bars_per_year is None:
-        first, last = equity_curve.index[0], equity_curve.index[-1]
-        diff = last - first
-        calendar_days = diff.days if hasattr(diff, "days") else 0
-        years = calendar_days / 365.25 if calendar_days > 0 else 1.0
-        bpy = int(n / years) if years > 0 else 252
+        bpy = effective_bars_per_year(equity_curve.index)
     else:
         bpy = bars_per_year
 
@@ -506,7 +585,11 @@ def calc_metrics(
         sharpe = 0.0
 
     # Drawdown
-    peak = equity_curve.cummax()
+    # The account starts at ``initial_cash`` before the first recorded bar, so
+    # that value is the initial high-water mark.  Using only observed equity
+    # understates a first-bar loss and makes drawdown nonsensical after equity
+    # crosses zero.
+    peak = equity_curve.cummax().clip(lower=float(initial_cash))
     dd = (equity_curve - peak) / peak.replace(0, 1)
     max_dd = float(dd.min())
 
@@ -540,10 +623,13 @@ def calc_metrics(
     bench_return = 0.0
     excess = 0.0
     ir = 0.0
+    tracking_error = 0.0
+    bench_beta = 0.0
     if bench_ret is not None and len(bench_ret) > 0:
         bench_return = float((1 + bench_ret).prod() - 1)
         excess = total_ret - bench_return
-        active_ret = port_ret - bench_ret.reindex(port_ret.index).fillna(0.0)
+        aligned_bench = bench_ret.reindex(port_ret.index).fillna(0.0)
+        active_ret = port_ret - aligned_bench
         # Same ddof=1 small-sample guard as ``vol`` / ``downside_std`` so the
         # information ratio stays finite for a single-observation series.
         active_std = float(active_ret.std()) if len(active_ret) > 1 and returns_finite else 0.0
@@ -554,6 +640,18 @@ def calc_metrics(
         )
         if not np.isfinite(ir):
             ir = 0.0
+        # The information ratio's own denominator, annualised. A
+        # benchmark-relative mandate is written around this number, and it was
+        # being computed and thrown away.
+        tracking_error = active_std * np.sqrt(bpy) if returns_finite else 0.0
+        if not np.isfinite(tracking_error):
+            tracking_error = 0.0
+        bench_var = float(aligned_bench.var()) if len(aligned_bench) > 1 else 0.0
+        if returns_finite and bench_var > 0:
+            covariance = float(port_ret.cov(aligned_bench))
+            bench_beta = covariance / bench_var
+            if not np.isfinite(bench_beta):
+                bench_beta = 0.0
 
     return {
         "final_value": float(equity_curve.iloc[-1]),
@@ -572,6 +670,8 @@ def calc_metrics(
         "benchmark_return": round(bench_return, 6),
         "excess_return": round(excess, 6),
         "information_ratio": round(ir, 4),
+        "tracking_error": round(float(tracking_error), 6),
+        "benchmark_beta": round(float(bench_beta), 4),
         "avg_turnover": round(avg_turnover, 6),
         "total_turnover": round(total_turnover, 6),
     }
@@ -586,5 +686,6 @@ def _empty_metrics(initial_cash: float) -> Dict[str, Any]:
         "win_rate": 0, "profit_loss_ratio": 0, "profit_factor": 0,
         "max_consecutive_loss": 0, "avg_holding_days": 0, "trade_count": 0,
         "benchmark_return": 0, "excess_return": 0, "information_ratio": 0,
+        "tracking_error": 0.0, "benchmark_beta": 0.0,
         "avg_turnover": 0.0, "total_turnover": 0.0,
     }

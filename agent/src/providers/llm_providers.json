@@ -9,15 +9,6 @@
     "api_key_required": true
   },
   {
-    "name": "requesty",
-    "label": "Requesty",
-    "api_key_env": "REQUESTY_API_KEY",
-    "base_url_env": "REQUESTY_BASE_URL",
-    "default_model": "openai/gpt-4o-mini",
-    "default_base_url": "https://router.requesty.ai/v1",
-    "api_key_required": true
-  },
-  {
     "name": "openai",
     "label": "OpenAI",
     "api_key_env": "OPENAI_API_KEY",
@@ -53,6 +44,19 @@
     "base_url_env": "DEEPSEEK_BASE_URL",
     "default_model": "deepseek-v4-pro",
     "default_base_url": "https://api.deepseek.com/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "opencode",
+    "label": "OpenCode (Go / Zen)",
+    "api_key_env": "OPENCODE_API_KEY",
+    "base_url_env": "OPENCODE_BASE_URL",
+    "default_model": "deepseek-v4.1-flash",
+    "default_base_url": "https://opencode.ai/zen/go/v1",
+    "base_url_options": [
+      "https://opencode.ai/zen/go/v1",
+      "https://opencode.ai/zen/v1"
+    ],
     "api_key_required": true
   },
   {
@@ -98,6 +102,15 @@
     "base_url_env": "GROQ_BASE_URL",
     "default_model": "meta-llama/llama-4-maverick-17b-128e-instruct",
     "default_base_url": "https://api.groq.com/openai/v1",
+    "api_key_required": true
+  },
+  {
+    "name": "novita",
+    "label": "Novita AI",
+    "api_key_env": "NOVITA_API_KEY",
+    "base_url_env": "NOVITA_BASE_URL",
+    "default_model": "moonshotai/kimi-k3",
+    "default_base_url": "https://api.novita.ai/openai",
     "api_key_required": true
   },
   {
@@ -195,6 +208,15 @@
     "api_key_required": true
   },
   {
+    "name": "modelscope",
+    "label": "ModelScope",
+    "api_key_env": "MODELSCOPE_API_KEY",
+    "base_url_env": "MODELSCOPE_BASE_URL",
+    "default_model": "Qwen/Qwen3.5-27B",
+    "default_base_url": "https://api-inference.modelscope.cn/v1",
+    "api_key_required": true
+  },
+  {
     "name": "ollama",
     "label": "Ollama",
     "api_key_env": null,
@@ -202,5 +224,16 @@
     "default_model": "qwen2.5:32b",
     "default_base_url": "http://localhost:11434",
     "api_key_required": false
+  },
+  {
+    "name": "copilot",
+    "label": "GitHub Copilot SDK",
+    "api_key_env": "COPILOT_GITHUB_TOKEN",
+    "base_url_env": "COPILOT_BASE_URL",
+    "default_model": "claude-sonnet-5",
+    "default_base_url": "https://api.githubcopilot.com",
+    "api_key_required": false,
+    "auth_type": "gh_cli",
+    "login_command": "gh auth login"
   }
 ]

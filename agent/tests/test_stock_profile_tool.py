@@ -14,6 +14,14 @@ from src.tools import stock_profile_tool as sp
 
 def _sample_summary() -> dict:
     return {
+        "price": {
+            "symbol": "AAPL",
+            "exchange": "NMS",
+            "exchangeName": "NasdaqGS",
+            "fullExchangeName": "NasdaqGS",
+            "quoteType": "EQUITY",
+            "currency": "USD",
+        },
         "defaultKeyStatistics": {
             "forwardPE": {"raw": 28.5, "fmt": "28.50"},
             "trailingEps": {"raw": 6.13},
@@ -27,6 +35,7 @@ def _sample_summary() -> dict:
             "recommendationKey": "buy",
             "numberOfAnalystOpinions": {"raw": 40},
             "returnOnEquity": {"raw": 1.47},
+            "financialCurrency": "USD",
         },
         "earningsTrend": {
             "trend": [
@@ -97,6 +106,12 @@ class TestStockProfileSuccess:
         assert data["ticker"] == "AAPL.US"
         assert set(data["sections"]) == set(sp._ALL_SECTIONS)
 
+        # Listing identity is independent of, and alongside, the sections.
+        assert data["listing"]["symbol"] == "AAPL"
+        assert data["listing"]["exchange"] == "NMS"
+        assert data["listing"]["currency"] == "USD"
+        assert data["listing"]["financial_currency"] == "USD"
+
         # raw cells are unwrapped to scalars.
         assert data["sections"]["key_stats"]["forwardPE"] == 28.5
         assert data["sections"]["financials"]["recommendationKey"] == "buy"
@@ -118,12 +133,13 @@ class TestStockProfileSuccess:
         rec = data["sections"]["recommendation_trend"][0]
         assert rec["strong_buy"] == 12
 
-        # Default fans out to all six Yahoo modules.
+        # Default fans out to all six Yahoo modules, plus the listing module.
         _, args, kwargs = mock_get.mock_calls[0]
         requested_modules = args[1]
         assert "defaultKeyStatistics" in requested_modules
         assert "recommendationTrend" in requested_modules
-        assert len(requested_modules) == len(sp._ALL_SECTIONS)
+        assert "price" in requested_modules
+        assert len(requested_modules) == len(sp._ALL_SECTIONS) + 1
 
     def test_section_subset_only_requests_those_modules(self):
         with patch.object(
@@ -140,7 +156,8 @@ class TestStockProfileSuccess:
         assert list(payload["data"]["sections"]) == ["financials"]
 
         _, args, _ = mock_get.mock_calls[0]
-        assert args[1] == ["financialData"]
+        # Listing module is always requested alongside the chosen sections.
+        assert args[1] == ["price", "financialData"]
 
     def test_missing_module_yields_empty_shaped_section(self):
         # Yahoo can omit a module for a symbol; shaper must not crash.
@@ -177,3 +194,68 @@ class TestStockProfileErrors:
         assert payload["ok"] is False
         assert "yahoo quoteSummary request failed" in payload["error"]
         assert "429" in payload["error"]
+
+
+def test_uk_ticker_market_label() -> None:
+    """VOD.L is served by Yahoo but must not be labeled 'us' (#1206)."""
+    from src.tools.stock_profile_tool import _market_for
+
+    assert _market_for("VOD.L") == "uk"
+    assert _market_for("BARC.L") == "uk"
+    assert _market_for("AAPL.US") == "us"
+    assert _market_for("AAPL") == "us"
+    assert _market_for("00700.HK") == "hk"
+
+
+def test_listing_identity_independent_of_fundamentals() -> None:
+    """A secondary listing keeps the issuer's fundamentals but its own venue (#1567)."""
+    primary_summary = _sample_summary()
+    with patch.object(sp, "get_quote_summary", return_value=primary_summary):
+        primary = json.loads(sp.StockProfileTool().execute(ticker="AAPL.US"))
+
+    secondary_summary = _sample_summary()
+    secondary_summary["price"] = {
+        "symbol": "GOOGL.BA",
+        "exchange": "BUE",
+        "exchangeName": "Buenos Aires",
+        "fullExchangeName": "Buenos Aires Stock Exchange",
+        "quoteType": "EQUITY",
+        "currency": "ARS",
+    }
+    with patch.object(sp, "get_quote_summary", return_value=secondary_summary):
+        secondary = json.loads(sp.StockProfileTool().execute(ticker="GOOGL.BA"))
+
+    # Same issuer fundamentals regardless of listing.
+    assert primary["data"]["sections"] == secondary["data"]["sections"]
+
+    # Listing identity is independently available and reflects the venue.
+    assert primary["data"]["listing"]["currency"] == "USD"
+    assert secondary["data"]["listing"]["currency"] == "ARS"
+    assert (
+        primary["data"]["listing"]["exchange"]
+        != secondary["data"]["listing"]["exchange"]
+    )
+
+
+def test_listing_identity_omits_financial_currency_when_not_fetched() -> None:
+    """financial_currency is only surfaced when the financials module is fetched."""
+    summary = _sample_summary()
+    del summary["financialData"]
+    with patch.object(sp, "get_quote_summary", return_value=summary):
+        out = sp.StockProfileTool().execute(ticker="AAPL.US", sections=["key_stats"])
+
+    listing = json.loads(out)["data"]["listing"]
+    assert "financial_currency" not in listing
+
+
+def test_listing_identity_underlying_symbol_only_when_yahoo_supplies_it() -> None:
+    """The underlying-issuer link is never inferred, only passed through (#1567)."""
+    summary = _sample_summary()
+    with patch.object(sp, "get_quote_summary", return_value=summary):
+        out = sp.StockProfileTool().execute(ticker="AAPL.US")
+    assert "underlying_symbol" not in json.loads(out)["data"]["listing"]
+
+    summary["price"]["underlyingSymbol"] = "AAPL"
+    with patch.object(sp, "get_quote_summary", return_value=summary):
+        out = sp.StockProfileTool().execute(ticker="AAPL.US")
+    assert json.loads(out)["data"]["listing"]["underlying_symbol"] == "AAPL"

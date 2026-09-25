@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.13"
+    "version": "v0.1.15"
   },
   "charts": {
     "noPriceData": "No price data for this symbol yet",
@@ -13,9 +13,11 @@
     "runtime": "Runtime",
     "scheduled": "Scheduled",
     "reports": "Reports",
+    "portfolio": "Portfolio",
     "alphaZoo": "Alpha Zoo",
     "settings": "Settings",
     "correlation": "Correlation Matrix",
+    "optionsLab": "Options Lab",
     "sessions": "Sessions",
     "newChat": "New Chat",
     "noSessions": "No chats yet — press + to start one",
@@ -101,6 +103,10 @@
     "connectorStatusUnavailable": "Status unavailable",
     "connectedAccessUnknown": "Connected · Access unknown",
     "missingLongbridgeVariables": "Missing configuration. Configure these variables in agent/.env and recreate the service:",
+    "missingEtoroVariables": "Missing configuration. Set these environment variables or create ~/.vibe-trading/etoro.json:",
+    "missingEtoroFileHint": "Example file: {\"api_key\": \"YOUR_PUBLIC_API_KEY\", \"user_key\": \"YOUR_USER_KEY\", \"profile\": \"live-readonly\"}. Profiles: etoro-paper-sdk, etoro-live-sdk-readonly, etoro-paper-trade, etoro-live-trade.",
+    "missingConnectorVariables": "Missing configuration. Configure connector credentials in ~/.vibe-trading/ or agent/.env, then verify the connection.",
+    "pathSeparatedKeyBound": "Demo/real path-separated (shared key pair)",
     "sdkConnectorProfile": "Direct SDK connector · read-only profile",
     "connectionDetails": "Connection details",
     "environment": "Environment",
@@ -121,9 +127,9 @@
     "connectorVerifyFailed": "Connection verification failed.",
     "diagnosticCredentialsPartial": "Credentials are incomplete. Configure all required variables and recreate the service.",
     "diagnosticCredentialsConflict": "Credential sources conflict. Keep one complete source, then retry.",
-    "diagnosticSdkMissing": "The Longbridge SDK is not installed in the backend service.",
+    "diagnosticSdkMissing": "The SDK required by this broker is not installed in the backend service.",
     "diagnosticAuthenticationFailed": "Authentication failed. Check the configured credentials.",
-    "diagnosticNetworkUnreachable": "The Longbridge service is unreachable. Check network access and retry.",
+    "diagnosticNetworkUnreachable": "The broker service or local gateway is unreachable. Check the connection address and network access, then retry.",
     "diagnosticBrokerError": "The broker rejected the read-only verification request. Retry or check backend logs."
   },
   "scheduled": {
@@ -157,12 +163,46 @@
     "statusCompleted": "Completed",
     "statusFailed": "Failed",
     "statusCancelled": "Cancelled",
+    "statusExpired": "Expired",
+    "noFurtherRuns": "No further runs",
+    "endsAt": "Ends {{when}}",
+    "proposalCreateTitle": "Scheduled research confirmation · Create",
+    "proposalCancelTitle": "Scheduled research confirmation · Cancel",
+    "proposalConfirmed": "Confirmed",
+    "proposalDiscarded": "Discarded",
+    "proposalExpired": "Expired",
+    "proposalCadence": "Cadence",
+    "proposalTimezone": "Timezone",
+    "proposalEndAt": "End time",
+    "proposalNoEnd": "None",
+    "proposalDelivery": "Result delivery",
+    "proposalInApp": "In app only",
+    "proposalDiscard": "Discard",
+    "proposalConfirmCreate": "Confirm creation",
+    "proposalConfirmCancel": "Confirm cancellation",
     "nextRun": "Next run: {{when}}",
     "lastError": "Last error: {{error}}",
     "delete": "Delete",
     "deleteAria": "Delete scheduled run: {{prompt}}",
     "confirmDelete": "Confirm delete",
-    "confirmDeleteAria": "Confirm deleting scheduled run: {{prompt}}"
+    "confirmDeleteAria": "Confirm deleting scheduled run: {{prompt}}",
+    "deliveryChannelLabel": "Deliver to channel",
+    "deliveryChannelPlaceholder": "telegram, feishu, … (leave empty to keep results in the app)",
+    "deliveryTargetLabel": "Channel target",
+    "deliveryTargetPlaceholder": "chat / group / user id",
+    "deliveryHint": "Off by default. A briefing is pushed once the run finishes, not when it is scheduled.",
+    "deliveryTargetRequired": "Choose a target for that channel, or clear the channel.",
+    "delivery_none": "Delivering to {{channel}} after the next run",
+    "delivery_pending": "Briefing owed to {{channel}}",
+    "delivery_sending": "Sending the briefing to {{channel}}",
+    "delivery_accepted": "Briefing accepted by {{channel}} (no provider receipt)",
+    "delivery_sent": "Briefing delivered to {{channel}}",
+    "delivery_failed": "Could not deliver to {{channel}}",
+    "verdictEmpty": "No verdict yet",
+    "verdictUnreadable": "Latest verdict unreadable",
+    "verdictNoCalls": "No calls",
+    "verdictDelta": "{{was}} → {{now}}",
+    "verdictRecorded": "as of {{when}}"
   },
   "reports": {
     "badge": "Reports",
@@ -381,13 +421,387 @@
       "stoppedToast": "IM channels stopped",
       "refreshFailed": "Failed to refresh IM channels",
       "startFailed": "Failed to start IM channels",
-      "stopFailed": "Failed to stop IM channels"
+      "stopFailed": "Failed to stop IM channels",
+      "config": {
+        "toggleConfig": "Configure {{name}}",
+        "keepCurrent": "Keep current ({{masked}})",
+        "secretNotSet": "Not set",
+        "clearSecret": "Clear",
+        "required": "Required",
+        "listPlaceholder": "Type a value and press Enter",
+        "removeValue": "Remove {{value}}",
+        "save": "Save configuration",
+        "hotApply": "Saving applies immediately — no restart needed.",
+        "saved": "Channel configuration saved",
+        "saveFailed": "Failed to save the channel configuration: {{message}}",
+        "test": "Test connection",
+        "testing": "Testing…",
+        "testOk": "Connection verified",
+        "testFailed": "Connection test failed: {{message}}",
+        "testCodeOk": "The provider accepted these credentials.",
+        "testCodeInvalidCredentials": "The provider rejected these credentials.",
+        "testCodeNetwork": "The provider could not be reached.",
+        "testCodeUnsupported": "This channel does not support connection tests.",
+        "testedSavedConfig": "Tested the saved configuration.",
+        "testedDraftConfig": "Tested the values currently in the form (not saved yet).",
+        "enable": "Enable channel",
+        "enableHint": "Disabling keeps the stored credentials — you can re-enable at any time.",
+        "enabledToast": "Channel enabled",
+        "disabledToast": "Channel disabled",
+        "enableFailed": "Failed to enable the channel: {{message}}",
+        "disableFailed": "Failed to disable the channel: {{message}}",
+        "enableRejected": "The provider rejected these credentials, so the channel was not enabled.",
+        "enableRejectedDetail": "Provider response: {{detail}}",
+        "enableAnyway": "Enable anyway",
+        "enableAnywayHint": "Enabling anyway skips the credential check — the channel may fail to connect.",
+        "notWritable": "Channel configuration is stored in a YAML file ({{path}}), which the web UI cannot edit. Edit that file directly to change credentials.",
+        "notWritableChip": "Read-only (YAML)",
+        "sdkMissing": "Runtime SDK not installed — {{hint}}",
+        "sdkMissingNoHint": "Runtime SDK not installed; the channel can be configured but may not start.",
+        "noFields": "This channel has no configurable fields.",
+        "loadFailed": "Could not load channel configuration."
+      },
+      "fields": {
+        "dingtalk": {
+          "client_id": {
+            "label": "Client ID (AppKey)",
+            "help": "The app's AppKey from the Credentials page of the DingTalk developer console."
+          },
+          "client_secret": {
+            "label": "Client Secret (AppSecret)",
+            "help": "The app's AppSecret. Stored server-side and never sent back to the browser."
+          },
+          "allow_from": {
+            "label": "Allowed senders",
+            "help": "Optional allowlist of DingTalk sender IDs that may talk to the agent (\"*\" allows everyone). Unpaired senders receive a pairing code in a direct message."
+          },
+          "allow_remote_media_redirects": {
+            "label": "Allow remote media redirects",
+            "help": "Follow provider redirects when downloading message media. Off by default."
+          },
+          "remote_media_redirect_allowed_hosts": {
+            "label": "Allowed redirect hosts",
+            "help": "Hosts allowed when remote media redirects are enabled. An empty list blocks every cross-host redirect."
+          },
+          "group_user_isolation": {
+            "label": "Per-user group sessions",
+            "help": "Give each member of a group chat their own agent session instead of sharing one."
+          },
+          "force_ipv4": {
+            "label": "Force IPv4",
+            "help": "Bind DingTalk API calls to IPv4. Useful when the app's egress-IP whitelist holds a stable IPv4 address while the IPv6 prefix keeps rotating."
+          }
+        },
+        "qq": {
+          "app_id": {
+            "label": "AppID",
+            "help": "The bot's AppID from the QQ Open Platform (q.qq.com) app settings."
+          },
+          "secret": {
+            "label": "AppSecret",
+            "help": "The bot's AppSecret. Stored server-side and never sent back to the browser."
+          },
+          "allow_from": {
+            "label": "Allowed senders",
+            "help": "Optional allowlist of QQ sender openids that may talk to the agent (\"*\" allows everyone). Unpaired senders receive a pairing code in a direct message."
+          },
+          "msg_format": {
+            "label": "Message format",
+            "help": "Reply format: plain or markdown."
+          },
+          "ack_message": {
+            "label": "Ack message",
+            "help": "Immediate acknowledgement sent when a message arrives. Leave empty to disable."
+          },
+          "media_dir": {
+            "label": "Media directory",
+            "help": "Where inbound attachments are saved. Empty uses ~/.vibe-trading/media/qq."
+          },
+          "download_chunk_size": {
+            "label": "Download chunk size",
+            "help": "Bytes per chunk when downloading attachments (default 262144)."
+          },
+          "download_max_bytes": {
+            "label": "Max download size (bytes)",
+            "help": "Safety cap for a single attachment download (default 209715200 = 200 MB)."
+          }
+        },
+        "email": {
+          "consent_granted": {
+            "label": "Consent granted",
+            "help": "Master permission switch. The channel reads and sends email only after you explicitly grant consent here."
+          },
+          "imap_host": {
+            "label": "IMAP host",
+            "help": "Inbound mail server host, e.g. imap.gmail.com. Incoming mail is polled from this server."
+          },
+          "imap_port": {
+            "label": "IMAP port",
+            "help": "Inbound port (default 993 with SSL)."
+          },
+          "imap_username": {
+            "label": "IMAP username",
+            "help": "Mailbox account used to sign in over IMAP, usually the full email address."
+          },
+          "imap_password": {
+            "label": "IMAP password",
+            "help": "Mailbox password or app password for IMAP. Stored server-side and never sent back to the browser."
+          },
+          "imap_mailbox": {
+            "label": "IMAP mailbox",
+            "help": "Mailbox folder polled for new mail (default INBOX)."
+          },
+          "imap_use_ssl": {
+            "label": "IMAP SSL",
+            "help": "Connect to IMAP over SSL (on by default; required for port 993)."
+          },
+          "imap_use_tls": {
+            "label": "IMAP STARTTLS",
+            "help": "When IMAP SSL is off, upgrade the connection with STARTTLS before logging in (on by default; typical for port 143). Turn it off only for a server that offers no TLS on a network you trust — the password is then sent in plain text."
+          },
+          "smtp_host": {
+            "label": "SMTP host",
+            "help": "Outbound mail server host, e.g. smtp.gmail.com. Replies are sent through this server."
+          },
+          "smtp_port": {
+            "label": "SMTP port",
+            "help": "Outbound port (default 587 with STARTTLS; use 465 for implicit SSL)."
+          },
+          "smtp_username": {
+            "label": "SMTP username",
+            "help": "Account used to authenticate with the SMTP server, usually the full email address."
+          },
+          "smtp_password": {
+            "label": "SMTP password",
+            "help": "Password or app password for SMTP. Stored server-side and never sent back to the browser."
+          },
+          "smtp_use_tls": {
+            "label": "SMTP STARTTLS",
+            "help": "Upgrade the SMTP connection with STARTTLS (on by default; typical for port 587). In practice this is mutually exclusive with SMTP SSL."
+          },
+          "smtp_use_ssl": {
+            "label": "SMTP SSL",
+            "help": "Connect to SMTP over implicit TLS, e.g. port 465 (off by default). In practice this is mutually exclusive with STARTTLS."
+          },
+          "verify_tls": {
+            "label": "Verify TLS certificate",
+            "help": "Verify the mail server's TLS certificate and hostname (recommended). Disable only for self-signed or internal-CA servers."
+          },
+          "from_address": {
+            "label": "From address",
+            "help": "Address replies are sent from. Empty reuses the SMTP username."
+          },
+          "auto_reply_enabled": {
+            "label": "Automatic replies",
+            "help": "Reply automatically to inbound email. Proactive sends started by the agent are unaffected."
+          },
+          "poll_interval_seconds": {
+            "label": "Poll interval (seconds)",
+            "help": "How often the IMAP mailbox is checked for new mail (default 30, floor 5)."
+          },
+          "mark_seen": {
+            "label": "Mark as seen",
+            "help": "Mark processed emails as read in the mailbox."
+          },
+          "post_action": {
+            "label": "After processing",
+            "help": "What happens to processed emails: delete, move them to another mailbox, or leave empty to keep them."
+          },
+          "post_action_move_mailbox": {
+            "label": "Move to mailbox",
+            "help": "Target mailbox used when After processing is set to move."
+          },
+          "post_action_expunge": {
+            "label": "Expunge after delete",
+            "help": "Permanently expunge deleted emails instead of leaving them flagged in the mailbox."
+          },
+          "post_action_ignore_skipped": {
+            "label": "Skip self and filtered mail",
+            "help": "Leave skipped emails (your own messages and senders filtered by the allowlist) untouched by the post-action (on by default)."
+          },
+          "max_body_chars": {
+            "label": "Max body chars",
+            "help": "Truncate each email body to this many characters (default 12000)."
+          },
+          "subject_prefix": {
+            "label": "Reply subject prefix",
+            "help": "Prefix added to reply subjects (default \"Re: \")."
+          },
+          "allow_from": {
+            "label": "Allowed senders",
+            "help": "Optional allowlist of email addresses that may talk to the agent (\"*\" allows everyone). Unpaired senders receive a pairing code in a reply."
+          },
+          "verify_dkim": {
+            "label": "Verify DKIM",
+            "help": "Require an Authentication-Results header with dkim=pass. Disabling both DKIM and SPF accepts spoofed From headers."
+          },
+          "verify_spf": {
+            "label": "Verify SPF",
+            "help": "Require an Authentication-Results header with spf=pass. Disabling both DKIM and SPF accepts spoofed From headers."
+          },
+          "allowed_attachment_types": {
+            "label": "Allowed attachment types",
+            "help": "MIME allowlist for inbound attachments, e.g. application/pdf or image/*. Leave empty to disable attachments."
+          },
+          "max_attachment_size": {
+            "label": "Max attachment size (bytes)",
+            "help": "Largest single attachment accepted, in bytes (default 2000000 = 2 MB)."
+          },
+          "max_attachments_per_email": {
+            "label": "Max attachments per email",
+            "help": "How many attachments are accepted from one email (default 5)."
+          }
+        },
+        "websocket": {
+          "host": {
+            "label": "Bind host",
+            "help": "Local address the WebSocket server binds to (default 127.0.0.1, local-only). A wildcard host such as 0.0.0.0 or :: exposes the server on every interface and is rejected unless a token or token-issue secret is set."
+          },
+          "port": {
+            "label": "Bind port",
+            "help": "Local port the WebSocket server listens on (default 8765). Ignored when a Unix socket path is set."
+          },
+          "unix_socket_path": {
+            "label": "Unix socket path",
+            "help": "Optional absolute path. When set, the server listens on this Unix socket instead of the host and port."
+          },
+          "path": {
+            "label": "Upgrade path",
+            "help": "WebSocket upgrade path clients connect to (default /). Must start with \"/\"."
+          },
+          "token": {
+            "label": "Static token",
+            "help": "Shared secret checked as the token query parameter during the handshake. Stored server-side and never sent back to the browser."
+          },
+          "token_issue_path": {
+            "label": "Token issue path",
+            "help": "HTTP GET route that hands out short-lived one-time tokens as JSON. Must differ from the upgrade path."
+          },
+          "token_issue_secret": {
+            "label": "Token issue secret",
+            "help": "Bearer secret the token-issue route requires (Authorization: Bearer or X-Vibe-Trading-Auth). Stored server-side and never sent back to the browser."
+          },
+          "token_ttl_s": {
+            "label": "Issued token TTL (s)",
+            "help": "Lifetime of a token handed out by the token-issue route, in seconds (30-86400, default 300)."
+          },
+          "websocket_requires_token": {
+            "label": "Require token",
+            "help": "Reject handshakes that do not present a valid static or issued token (on by default)."
+          },
+          "allow_from": {
+            "label": "Allowed clients",
+            "help": "Optional allowlist of client IDs that may connect (\"*\" allows everyone, the default)."
+          },
+          "streaming": {
+            "label": "Stream output",
+            "help": "Stream model output deltas to connected clients as they are generated."
+          },
+          "max_message_bytes": {
+            "label": "Max message bytes",
+            "help": "Largest inbound frame accepted, in bytes (default 37748736; range 1024-41943040)."
+          },
+          "ping_interval_s": {
+            "label": "Ping interval (s)",
+            "help": "Seconds between keepalive pings (5-300, default 20)."
+          },
+          "ping_timeout_s": {
+            "label": "Ping timeout (s)",
+            "help": "Seconds to wait for a ping reply before dropping the connection (5-300, default 20)."
+          },
+          "ssl_certfile": {
+            "label": "TLS certificate path",
+            "help": "PEM certificate path on the server for WSS. Set both certificate and key, or neither; these are file paths on the server, not uploaded material."
+          },
+          "ssl_keyfile": {
+            "label": "TLS key path",
+            "help": "PEM private key path on the server for WSS. Set both certificate and key, or neither; these are file paths on the server, not uploaded material."
+          }
+        }
+      },
+      "guides": {
+        "dingtalk": {
+          "title": "DingTalk setup guide",
+          "intro": "DingTalk bots use Stream Mode, so no public callback URL is needed.",
+          "step1": "Create an app in the DingTalk developer console (open-dev.dingtalk.com).",
+          "step2": "Add the bot capability to the app and enable Stream Mode for it.",
+          "step3": "Copy the app's AppKey into Client ID and its AppSecret into Client Secret.",
+          "step4": "Publish the app so it is available to your organization.",
+          "step5": "Return here, click Test connection, then enable the channel.",
+          "docsLabel": "Open the DingTalk developer console"
+        },
+        "qq": {
+          "title": "QQ setup guide",
+          "intro": "QQ bots connect over WebSocket via the official botpy SDK, so no public callback URL is needed.",
+          "step1": "Register on the QQ Open Platform (q.qq.com) and create a bot.",
+          "step2": "Copy the AppID and AppSecret from the bot's development settings page.",
+          "step3": "Paste them into the AppID and AppSecret fields above.",
+          "step4": "Add the bot to a QQ group or chat with it privately, following the platform's sandbox/publish rules.",
+          "step5": "Return here, click Test connection, then enable the channel.",
+          "docsLabel": "Open the QQ Open Platform"
+        },
+        "email": {
+          "title": "Email setup guide",
+          "intro": "The email channel polls a mailbox over IMAP for incoming mail and replies over SMTP, so no public callback URL is needed.",
+          "step1": "Get the IMAP and SMTP host names and ports from your mail provider (usually imap.<provider> on 993 and smtp.<provider> on 587).",
+          "step2": "Enable IMAP and SMTP access in your mailbox settings and, if the provider requires one (Gmail, QQ Mail and other 2FA providers), create an app password.",
+          "step3": "Fill in the IMAP and SMTP credentials above, set From address, and add your own address to Allowed senders.",
+          "step4": "Click Test connection — it probes the IMAP login, the mailbox folder, and the SMTP login.",
+          "step5": "Tick Consent granted, then enable the channel; automatic replies then reach senders whose mail passes the DKIM/SPF checks.",
+          "docsLabel": "Open the Vibe-Trading docs"
+        },
+        "websocket": {
+          "title": "WebSocket setup guide",
+          "intro": "The WebSocket channel runs its own local server that clients connect to directly over a WebSocket URL, so no public callback URL is needed.",
+          "step1": "Choose a bind address: keep 127.0.0.1 for local-only use, or set 0.0.0.0 / :: to expose the server — a wildcard host requires a token or a token-issue secret.",
+          "step2": "Set a static token, or a token-issue path plus its bearer secret so clients can request short-lived tokens.",
+          "step3": "Connect clients with ws://host:port/path?client_id=...&token=...",
+          "step4": "Saving while the channel is running hot-swaps the server: connected clients (including this Web UI chat) briefly disconnect and reconnect.",
+          "step5": "Click Test connection — it validates the SSL certificate/key material and the address availability locally.",
+          "docsLabel": "Open the Vibe-Trading docs"
+        }
+      }
     },
     "generation": "Generation",
     "dataSourceSettings": "Data Source Settings",
     "dataSourceSettingsDesc": "Configure optional market data credentials used by backtests and research agents.",
+    "sourcePriority": {
+      "title": "Data Source Priority",
+      "description": "Control the order data sources are tried per market when the agent fetches data automatically. Explicitly requested sources are unaffected.",
+      "marketLabel": "Market",
+      "badgeDefault": "Default",
+      "badgeCustom": "Custom",
+      "customMarkets": "Custom · {{count}}",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "resetToDefault": "Reset to default",
+      "invalidOverrideWarning": "The saved override for {{envVar}} is invalid (it must reorder the same sources) — the default order is in effect.",
+      "noMarkets": "No market data sources are registered.",
+      "howItWorksTitle": "How it works",
+      "howItWorks": "For auto-detected symbols, sources are tried top to bottom; a source that fails falls through to the next one. Saving applies immediately — no restart needed.",
+      "caliberCaveat": "Caliber caveat: sources differ in adjustment basis — e.g. Yahoo serves raw (unadjusted) OHLC while Tencent/Eastmoney/Tushare/BaoStock serve adjusted prices — so a reordered chain can change backtest numbers.",
+      "markets": {
+        "a_share": "A-Shares (China)",
+        "us_equity": "US Equities",
+        "hk_equity": "HK Equities",
+        "india_equity": "India Equities",
+        "kr_equity": "Korea Equities",
+        "ca_equity": "Canada Equities",
+        "vietnam_equity": "Vietnam Equities",
+        "ar_equity": "Argentina Equities",
+        "uk_equity": "UK Equities",
+        "index": "Indices",
+        "crypto": "Crypto",
+        "futures": "Futures",
+        "fund": "Funds",
+        "macro": "Macro",
+        "forex": "Forex"
+      }
+    },
     "tushareToken": "Tushare token",
+    "gildataToken": "Gildata token",
     "clearTushareToken": "Clear saved Tushare token",
+    "clearGildataToken": "Clear saved Gildata token",
     "saveDataSourceSettings": "Save data source settings",
     "baostock": "BaoStock",
     "loadLlmSettingsFailed": "Failed to load LLM settings: {{message}}",
@@ -395,10 +809,12 @@
     "llmSettingsSaved": "LLM settings saved",
     "saveLlmSettingsFailed": "Failed to save LLM settings: {{message}}",
     "dataSourceSettingsSaved": "Data source settings saved",
+    "desktopCredentialRestarting": "Credential encrypted. Restarting the local service…",
     "saveDataSourceSettingsFailed": "Failed to save data source settings: {{message}}",
     "configured": "Configured",
     "keepCurrentKey": "Leave blank to keep the current key",
     "providerUsesOauth": "This provider uses OAuth. Run: {{command}}",
+    "providerUsesManagedAuth": "This provider manages authentication. Run: {{command}}",
     "noApiKeyRequired": "This provider does not require an API key.",
     "keepCurrentToken": "Leave blank to keep the current token",
     "iwencaiApiKey": "iWenCai API Key",
@@ -415,8 +831,10 @@
     "unknownError": "Unknown error",
     "providerChangeHint": "Changing providers updates the recommended model and endpoint.",
     "oauth": "OAuth",
+    "authentication": "Authentication",
     "apiKey": "API key",
-    "tushareTokenDesc": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available."
+    "tushareTokenDesc": "Used for China A-share, futures, fund, and macro data. If unset, the project falls back to AKShare where available.",
+    "gildataTokenDesc": "Optional Gildata (Hundsun Juyuan) feed for China A-shares. When set, it joins the tail of the A-share fallback chain with forward-adjusted daily bars."
   },
   "qveris": {
     "title": "QVeris Tool Marketplace",
@@ -489,6 +907,9 @@
     "executablesNotAllowed": "Executables and archives are not allowed",
     "fileSizeExceeds": "File size exceeds 50 MB limit",
     "uploaded": "Uploaded: {{filename}}",
+    "attachmentLimit": "You can attach up to {{count}} files",
+    "dropFiles": "Drop files here",
+    "removeAttachment": "Remove {{filename}}",
     "uploadFailed": "Upload failed: {{error}}",
     "failedToSend": "Failed to send message, please retry.",
     "failedToContinue": "Failed to continue goal, please retry.",
@@ -500,7 +921,6 @@
     "haltConnectorTitle": "Instantly halt connector runtime activity",
     "haltConnector": "Halt connector runtime",
     "moreOptions": "More options",
-    "uploadPdf": "Upload PDF document",
     "researchGoal": "Research Goal",
     "agentSwarm": "Agent Swarm",
     "attachmentChip": "Attachment",
@@ -527,7 +947,8 @@
       "failed": "Failed",
       "steps": "{{count}} steps",
       "continue": "Continue",
-      "reattach": "Re-attach"
+      "reattach": "Re-attach",
+      "checkingFigures": "Checking the figures in this answer (round {{round}})…"
     },
     "resumeConnector": "Resume connector",
     "resumeConnectorTitle": "Clear the kill switch and re-enable connector activity",
@@ -539,8 +960,30 @@
     "runNotFound": "Run not found",
     "runNotFoundDesc": "The run directory may have been removed, or your browser may not have API access configured. Check that the API authentication key is set in Settings if accessing remotely.",
     "goBack": "Go back",
+    "showFullPrompt": "Show full prompt",
+    "showLessPrompt": "Show less",
     "chart": "Chart",
     "trades": "Trades",
+    "factor": "Factor Research",
+    "studio": "Portfolio Studio",
+    "riskXray": "Risk X-Ray",
+    "rebalanceNotes": "Rebalance Notes",
+    "hhi": "HHI",
+    "effectiveN": "Effective N",
+    "annualizedVol": "Annualized Vol",
+    "maxDrawdown": "Max Drawdown",
+    "symbol": "Symbol",
+    "weight": "Weight",
+    "rebalanceCount": "Target changes (requested)",
+    "rebalanceExecuted": "Rebalance executions (fills)",
+    "rebalanceRealizedTurnover": "Realized rebalance turnover",
+    "turnoverMean": "Avg Turnover (requested)",
+    "turnoverMax": "Max Turnover (requested)",
+    "largestRebalance": "Largest Rebalance",
+    "date": "Date",
+    "turnover": "Turnover",
+    "entries": "Entries",
+    "exits": "Exits",
     "validation": "Validation",
     "runCard": "Run Card",
     "code": "Code",
@@ -548,7 +991,6 @@
     "downloadMetricsCsv": "Download Metrics CSV",
     "noChartData": "No chart data available",
     "noChartDataDesc": "This run didn't save price data, so there's no chart. The metrics below are still valid.",
-    "symbol": "Symbol",
     "showOnly": "Show only",
     "addSymbol": "Add symbol",
     "loadAll": "Load all",
@@ -579,6 +1021,8 @@
     "noBacktestSummary": "No backtest summary recorded.",
     "noReproducibilityHashes": "No reproducibility hashes recorded.",
     "noScalarMetrics": "No scalar metrics recorded.",
+    "noStructuredMetrics": "No structured metrics recorded.",
+    "structuredMetrics": "Structured metrics",
     "noValidationPayload": "No validation payload recorded.",
     "noArtifactChecksums": "No artifact checksums recorded.",
     "noCodeFiles": "No code files.",
@@ -598,7 +1042,94 @@
     "sideSell": "Sell",
     "copyCode": "Copy",
     "codeCopied": "Code copied",
-    "codeLines": "{{count}} lines"
+    "codeLines": "{{count}} lines",
+    "tearsheet": "Tearsheet",
+    "monthlyReturns": "Monthly Returns",
+    "annualReturns": "Annual Returns",
+    "topDrawdowns": "Top Drawdowns",
+    "tearsheetYear": "Full Year",
+    "noTearsheetData": "Not enough equity data for a tearsheet.",
+    "ddRank": "#",
+    "ddDepth": "Depth",
+    "ddPeak": "Peak",
+    "ddTrough": "Trough",
+    "ddRecovery": "Recovery",
+    "ddPeakToTrough": "Peak→Trough",
+    "ddTroughToRecovery": "Trough→Rec.",
+    "ddNotRecovered": "Not recovered",
+    "ddDays": "{{count}} d",
+    "dashboard": "Research dashboard",
+    "positions": {
+      "tab": "Positions",
+      "weightDistribution": "Weight distribution",
+      "sectorDistribution": "Sector distribution",
+      "weightEvolution": "Weight evolution",
+      "pie": "Pie",
+      "treemap": "Treemap",
+      "cash": "Cash",
+      "rest": "Other",
+      "restLong": "Other (long)",
+      "restShort": "Other (short)",
+      "basisGross": "Slices are |weight| (margin ÷ NAV); cash is the uncommitted remainder and is omitted when the book is fully committed or levered.",
+      "basisNet": "Net exposure: signed weight ÷ NAV. Negative values mean net short.",
+      "short": "Short",
+      "resolveIndustries": "Resolve industries",
+      "resolving": "Resolving...",
+      "resolveFailed": "Failed to resolve industries",
+      "retry": "Retry",
+      "asOf": "As of {{date}}",
+      "noPositions": "No position weights recorded for this run.",
+      "holdingsCount": "{{count}} holdings",
+      "assetClass": {
+        "a_share": "A-share",
+        "us_equity": "US equity",
+        "hk_equity": "HK equity",
+        "ca_equity": "Canada equity",
+        "kr_equity": "Korea equity",
+        "india_equity": "India equity",
+        "crypto": "Crypto",
+        "futures": "Futures",
+        "forex": "Forex",
+        "ar_equity": "Argentina equity",
+        "uk_equity": "UK equity",
+        "vietnam_equity": "Vietnam equity",
+        "other": "Other"
+      }
+    },
+    "attribution": "Attribution",
+    "attrBenchmark": "Benchmark",
+    "attrPortfolio": "Portfolio",
+    "attrActive": "Active",
+    "attrAutoEqualWeight": "auto equal-weight",
+    "attrNoBenchmark": "No benchmark configured",
+    "attrModeSymbol": "Brinson mode: symbol",
+    "attrModeAssetClass": "Brinson mode: asset class",
+    "attrModeInvestedCash": "Brinson mode: invested cash",
+    "attrSector": "Sector",
+    "attrPortfolioWeight": "Portfolio Weight",
+    "attrBenchmarkWeight": "Benchmark Weight",
+    "attrPortfolioReturn": "Portfolio Return",
+    "attrBenchmarkReturn": "Benchmark Return",
+    "attrAllocation": "Allocation",
+    "attrSelection": "Selection",
+    "attrInteraction": "Interaction",
+    "attrTotal": "Total",
+    "attrBrinsonTitle": "Brinson Attribution",
+    "attrWaterfallTitle": "Return Waterfall",
+    "attrNoBrinson": "Brinson attribution is not available for this run.",
+    "attrAlpha": "Alpha (ann.)",
+    "attrBeta": "Beta",
+    "attrTStat": "t-stat: {{value}}",
+    "attrRSquared": "R²",
+    "attrInformationRatio": "Information Ratio",
+    "attrTrackingError": "Tracking Error",
+    "attrNoFactor": "Factor attribution is not available for this run.",
+    "attrRollingTitle": "Rolling Beta & Alpha",
+    "attrRollingWindow": "{{count}}-bar rolling window",
+    "attrCumulativeTitle": "Cumulative Returns",
+    "attrLoading": "Loading attribution…",
+    "attrError": "Failed to load attribution.",
+    "attrNoData": "No attribution data is available for this run."
   },
   "compare": {
     "title": "Strategy Comparison",
@@ -652,6 +1183,112 @@
     "regimeFused": "FUSED",
     "regimeEnterThreshold": "enter",
     "regimeExitThreshold": "exit"
+  },
+  "options": {
+    "title": "Options Lab",
+    "subtitle": "Strategy builder, expiry payoff, spot x IV scenarios, portfolio Greeks and a live US options chain.",
+    "disclaimer": "Research only. Theoretical pricing and scenario outputs are model estimates, not investment advice.",
+    "errorGeneric": "Analysis failed",
+    "presets": {
+      "label": "Presets",
+      "longCall": "Long Call",
+      "longPut": "Long Put",
+      "bullCallSpread": "Bull Call Spread",
+      "bearPutSpread": "Bear Put Spread",
+      "bullPutSpread": "Bull Put Spread",
+      "bearCallSpread": "Bear Call Spread",
+      "longStraddle": "Long Straddle",
+      "longStrangle": "Long Strangle",
+      "ironCondor": "Iron Condor",
+      "ironButterfly": "Iron Butterfly",
+      "callButterfly": "Call Butterfly",
+      "ratioCallSpread": "Ratio Call Spread"
+    },
+    "builder": {
+      "title": "Strategy Builder",
+      "legs": "Legs",
+      "type": "Type",
+      "call": "Call",
+      "put": "Put",
+      "strike": "Strike",
+      "qty": "Qty",
+      "premium": "Premium",
+      "premiumHint": "Blank premium = Black-Scholes priced by the engine",
+      "qtyHint": "Positive = long, negative = short",
+      "addLeg": "Add leg",
+      "removeLeg": "Remove leg",
+      "parameters": "Parameters",
+      "entrySpot": "Entry spot",
+      "expiryDays": "Days to expiry",
+      "volatility": "Volatility (%)",
+      "riskFreeRate": "Risk-free rate (%)",
+      "multiplier": "Multiplier",
+      "multiplierHint": "100 = standard US equity contract",
+      "commissionRate": "Commission rate (%)",
+      "invalidHint": "Check inputs: positive spot and strikes, non-zero integer quantities, positive volatility.",
+      "analyzing": "Analyzing…"
+    },
+    "metrics": {
+      "entryCost": "Entry cost",
+      "debit": "Debit",
+      "credit": "Credit",
+      "flat": "Flat",
+      "breakevens": "Breakevens",
+      "maxProfit": "Max profit",
+      "maxLoss": "Max loss",
+      "unlimited": "Unlimited",
+      "none": "None"
+    },
+    "payoff": {
+      "title": "Expiry Payoff",
+      "pnl": "P&L",
+      "spot": "Spot at expiry",
+      "entrySpot": "Spot",
+      "breakeven": "BE",
+      "noData": "No payoff data yet — build a strategy above."
+    },
+    "greeks": {
+      "title": "Portfolio Greeks",
+      "delta": "Delta",
+      "deltaDesc": "Directional exposure, in equivalent shares of the underlying.",
+      "gamma": "Gamma",
+      "gammaDesc": "How much delta changes per $1 move in the underlying.",
+      "theta": "Theta",
+      "thetaDesc": "Daily time decay in dollars. Negative means the position bleeds value each day.",
+      "vega": "Vega",
+      "vegaDesc": "Dollar P&L for a +1% move in implied volatility.",
+      "rho": "Rho",
+      "rhoDesc": "Dollar P&L for a +1% move in interest rates."
+    },
+    "scenario": {
+      "title": "Spot x IV Scenario Matrix",
+      "spotAxis": "Spot at expiry",
+      "ivAxis": "Implied volatility",
+      "pnl": "P&L",
+      "noData": "No scenario grid returned."
+    },
+    "chain": {
+      "title": "US Options Chain",
+      "ticker": "Ticker",
+      "expiration": "Expiration",
+      "load": "Load",
+      "loading": "Loading chain…",
+      "calls": "Calls",
+      "puts": "Puts",
+      "strike": "Strike",
+      "last": "Last",
+      "bid": "Bid",
+      "ask": "Ask",
+      "spread": "Spread%",
+      "volume": "Volume",
+      "openInterest": "OI",
+      "iv": "IV%",
+      "itm": "ITM",
+      "atm": "ATM",
+      "noData": "No contracts returned for this selection.",
+      "errorTitle": "Options chain unavailable",
+      "retry": "Retry"
+    }
   },
   "alphaZoo": {
     "title": "Alpha Zoo",
@@ -845,6 +1482,10 @@
     "running": "running",
     "halted": "halted",
     "authorized": "Authorized",
+    "sdkConnected": "Connected",
+    "sdkReadOnlyNote": "Direct SDK connector · read-only profile. Live trading requires the trade profile and a committed mandate.",
+    "sdkCredentialsRequired": "Configure API credentials for this connector (see Runtime for setup).",
+    "sdkConnectionError": "Connection check failed. Verify credentials on the Runtime page.",
     "notConnected": "Not connected",
     "connectProfile": "Connect this profile to enable connector runtime",
     "authorizeNote": "The connector channel stays read-only until OAuth succeeds and a mandate is committed.",
@@ -920,7 +1561,15 @@
     "maxPerOrder": "≤{{amount}}/order",
     "expiresOn": "expires {{date}}",
     "accountSummary": "{{broker}} · {{type}} account · funded by {{fundedBy}}",
-    "adjustRequestMessage": "For mandate proposal \"{{label}}\" (option {{ordinal}}): {{text}}"
+    "adjustRequestMessage": "For mandate proposal \"{{label}}\" (option {{ordinal}}): {{text}}",
+    "accountLoading": "Loading the broker's accounts…",
+    "accountLoadFailed": "Could not load the broker's accounts: {{error}}",
+    "accountLabel": "Account this mandate may trade",
+    "accountChoose": "Choose an account",
+    "accountDefault": " · broker default",
+    "accountDeactivated": " · deactivated",
+    "accountNotAgentic": " · agentic trading not allowed",
+    "accountHint": "The agent trades only this account. Nothing is chosen for you."
   },
   "messageBubble": {
     "elapsedTime": "Total response time",
@@ -1110,5 +1759,239 @@
     "update_research_goal_status": "Update goal status",
     "web_search": "Search the web",
     "write_file": "Generate code"
+  },
+  "runDashboard": {
+    "eyebrow": "Quantitative research · Backtest",
+    "noBacktestData": "This run has no backtest data to chart",
+    "noBacktestDataStudioHint": "It looks like a portfolio/risk analysis instead — check the Studio tab for its numbers.",
+    "engine": "engine",
+    "portfolio": "Portfolio",
+    "systematicStrategy": "Systematic strategy",
+    "strategyInferred": "Inferred",
+    "strategyMacd": "MACD trend strategy",
+    "strategyRsi": "RSI timing strategy",
+    "strategyMomentum": "Momentum strategy",
+    "strategyMeanReversion": "Mean-reversion strategy",
+    "strategyBreakout": "Breakout strategy",
+    "strategyMaCrossover": "{{fast}}/{{slow}}-day moving-average crossover",
+    "seriesStrategy": "Strategy",
+    "seriesBenchmark": "Benchmark",
+    "seriesDrawdown": "Drawdown",
+    "seriesRollingSharpe": "Rolling Sharpe (20)",
+    "kpiTotalReturn": "Total return",
+    "kpiAnnualReturn": "Annual return",
+    "kpiMaxDrawdown": "Max drawdown",
+    "kpiWinRate": "Win rate",
+    "kpiTrades": "Trades",
+    "figEquityTitle": "Equity and benchmark",
+    "figEquityNote": "Compare the strategy's growth path with its benchmark.",
+    "figRiskTitle": "Drawdown and rolling risk",
+    "figRiskNote": "See when losses deepened and risk-adjusted performance changed.",
+    "figPnlTitle": "Realized trade P&L",
+    "figPnlNote": "Profit and loss from completed trades.",
+    "figLedgerTitle": "Trade ledger",
+    "figLedgerNote": "Review the latest 100 trades in chronological detail.",
+    "figMetricsTitle": "Performance metrics",
+    "figMetricsNote": "A complete summary of return, risk, and trading statistics.",
+    "noTrades": "No trades were recorded.",
+    "colTime": "Time",
+    "colSymbol": "Symbol",
+    "colSide": "Side",
+    "colPrice": "Price",
+    "colQty": "Qty",
+    "colPnl": "PnL",
+    "colReason": "Reason"
+  },
+  "factor": {
+    "title": "Factor Research",
+    "selectFactor": "Select factor",
+    "icSeries": "Daily IC",
+    "icMa": "20-period MA",
+    "icStats": "IC Statistics",
+    "icMean": "IC Mean",
+    "icStd": "IC Std",
+    "ir": "IR",
+    "icPositiveRatio": "IC > 0 Ratio",
+    "icCount": "IC Observations",
+    "longShortSpread": "Long-Short Spread",
+    "nGroups": "Quantile Groups",
+    "quantileEquity": "Quantile Group Equity",
+    "quantileEquityNote": "Group_1 holds the lowest factor values and Group_N the highest; the gap between the top and bottom quantiles measures selection power.",
+    "correlation": "IC Correlation",
+    "correlationNote": "Pairwise correlation of the daily IC time series across factors; highly correlated factors carry overlapping information.",
+    "insufficientOverlap": "IC correlation is unavailable because the factor IC series do not overlap enough on common dates.",
+    "loading": "Loading factor results…",
+    "error": "Failed to load factor results",
+    "noFactorData": "No factor analysis results are available for this run."
+  },
+  "portfolio": {
+    "page": {
+      "badge": "Local read-only · Multi-account",
+      "title": "Portfolio",
+      "subtitle": "One valuation across the enabled read-only connections. An account that cannot be read is reported as an error and left out of the totals.",
+      "fxFresh": "USD/CNY {{rate}} · live rate",
+      "fxCached": "USD/CNY {{rate}} · cached rate",
+      "manageAccounts": "Manage accounts",
+      "exportCsv": "Export CSV",
+      "refreshAll": "Refresh all",
+      "refreshing": "Refreshing",
+      "warningsTitle": "Data notes",
+      "emptyTitle": "No portfolio snapshot yet",
+      "emptyBody": "Add at least one read-only account to begin.",
+      "emptyAction": "Add account",
+      "errorLoad": "Portfolio unavailable",
+      "errorRefresh": "Refresh failed",
+      "errorReconnect": "Account reconnect failed",
+      "errorReconnectTimeout": "Browser authorization timed out. Reconnect and complete the broker authorization promptly.",
+      "errorSaveSettings": "Unable to save portfolio settings",
+      "errorExport": "Export failed"
+    },
+    "metrics": {
+      "total": "Total assets",
+      "change": "Today's asset change",
+      "changeNote": "Includes market moves and cash flows",
+      "coverage": "Valuation coverage",
+      "coverageNote": "Priced {{priced}} · cash {{cash}}",
+      "lastComplete": "Last complete update",
+      "excluded": "{{count}} accounts could not be read and are excluded from this total"
+    },
+    "allocation": {
+      "byAccount": "Allocation by account",
+      "byHolding": "Allocation by holding",
+      "center": "Holdings",
+      "other": "Other holdings",
+      "cash": "Cash",
+      "unpriced": "Unpriced / other",
+      "cashUnpriced": "Cash / unpriced"
+    },
+    "accounts": {
+      "title": "Account status",
+      "hint": "Click an account to filter holdings",
+      "clearFilter": "Clear filter",
+      "positions": "{{count}} positions",
+      "fresh": "Read successfully",
+      "failed": "Could not be read — not counted in the total",
+      "lastSuccess": "Last successful read {{time}}",
+      "noSuccess": "No successful read yet",
+      "reconnect": "Reconnect",
+      "retryRead": "Retry read"
+    },
+    "holdings": {
+      "title": "Holdings",
+      "count": "{{count}} positions",
+      "search": "Search broker, symbol or market",
+      "colBroker": "Broker",
+      "colSymbol": "Symbol",
+      "colType": "Type",
+      "colQuantity": "Quantity",
+      "colCostPrice": "Cost / Price",
+      "colValue": "Value",
+      "colWeight": "Weight",
+      "colPnl": "Unrealized P/L",
+      "colData": "Data",
+      "priced": "Priced",
+      "unpriced": "Unpriced"
+    },
+    "history": {
+      "title": "Asset history",
+      "hint": "Complete snapshots only; changes may include cash flows.",
+      "count": "{{count}} complete snapshots",
+      "empty": "History begins after a complete refresh"
+    },
+    "credentials": {
+      "title": "Connections and credentials",
+      "readOnlyProfile": "Read-only profile",
+      "writableProfile": "Write-capable profile",
+      "renewalAutomatic": "Connector-managed renewal",
+      "renewalSession": "Local session",
+      "renewalProvider": "Provider-managed validity"
+    },
+    "status": {
+      "title": "Refreshing enabled accounts sequentially",
+      "reading": "Reading",
+      "done": "Done",
+      "failed": "Failed",
+      "waiting": "Waiting"
+    },
+    "env": {
+      "live": "Live",
+      "paper": "Paper"
+    },
+    "compatibility": {
+      "native": "Native adapter",
+      "contractTested": "Contract-tested",
+      "experimental": "Experimental"
+    },
+    "editor": {
+      "title": "Manage portfolio accounts",
+      "subtitle": "Only account selection and display preferences are stored here.",
+      "close": "Close",
+      "currency": "Primary display currency",
+      "selected": "Selected accounts",
+      "selectedHint": "Use the arrow buttons to change display order.",
+      "enableAccount": "Enable account",
+      "accountLabel": "Account label",
+      "moveUp": "Move up",
+      "moveDown": "Move down",
+      "removeAccount": "Remove account",
+      "includeCash": "Include this account's cash",
+      "noAccounts": "No accounts selected",
+      "addTitle": "Add a local read-only connection",
+      "addHint": "Choose from connections already created on this computer.",
+      "openConnections": "Open connection center",
+      "chooseConnection": "Choose a connection…",
+      "noConnections": "No available connections",
+      "add": "Add",
+      "footerHint": "Enabled accounts refresh after saving.",
+      "cancel": "Cancel",
+      "save": "Save and refresh",
+      "saving": "Saving"
+    },
+    "connections": {
+      "title": "Local connection center",
+      "subtitle": "Definitions stay local; secrets go only to the OS credential vault.",
+      "close": "Close connection center",
+      "createTitle": "Create account connection",
+      "createHint": "A profile is a public template; a connection is private to this computer.",
+      "profile": "Read-only profile",
+      "chooseProfile": "Choose a profile…",
+      "localId": "Local connection ID",
+      "displayName": "Display name",
+      "displayNamePlaceholder": "My main account",
+      "create": "Create connection",
+      "created": "Local connection created.",
+      "listTitle": "Connections on this computer",
+      "listCount": "{{count}} connections",
+      "empty": "No local connections yet",
+      "codexTitle": "Add a broker with Codex",
+      "codexBody": "Ask Codex to run connector init, implement the read adapter from official docs, validate it, then install it. The plugin stays outside the repository.",
+      "readOnly": "Read-only",
+      "credentialSaved": "saved",
+      "optional": "(optional)",
+      "authType": "Authentication",
+      "dependency": "Local dependency",
+      "oauthNote": "Uses OAuth; authorize through reconnect when required.",
+      "localNote": "This connector uses a local app or gateway session; start it as described above, then test.",
+      "saveVault": "Save to vault",
+      "savedVault": "Credentials saved to the OS vault.",
+      "test": "Test",
+      "testOk": "{{label}} is ready.",
+      "testFailed": "{{label}} check failed: {{error}}",
+      "unknownTestError": "The connector returned an unknown error.",
+      "delete": "Delete",
+      "configured": "Required credentials configured",
+      "accountTitle": "Account",
+      "accountCurrent": "Reads the account ending ····{{last4}}",
+      "accountNone": "No account selected. This connection reads nothing until you choose one.",
+      "accountLoad": "Choose account",
+      "accountChange": "Change account",
+      "accountEmpty": "This login reaches no accounts.",
+      "accountPicker": "Accounts this login can reach",
+      "accountChoose": "Choose an account",
+      "accountDefault": " · broker default",
+      "accountDeactivated": " · deactivated",
+      "accountSave": "Use this account",
+      "accountSaved": "Account saved."
+    }
   }
 }

@@ -1,9 +1,10 @@
-"""Tests for GlobalEquityEngine (US / HK) market rules.
+"""Tests for GlobalEquityEngine (US / HK / Canada) market rules.
 
 Validates:
   - US: zero commission, fractional shares, low slippage
   - HK: stamp tax bilateral, 100-share lots, levies
-  - T+0 for both markets
+  - Canada: whole shares, configurable broker cost, TSX/TSXV tick grid
+  - Same-session trading for all three markets
   - Both directions allowed
 """
 
@@ -36,6 +37,12 @@ def _hk_engine(**overrides) -> GlobalEquityEngine:
     return GlobalEquityEngine(config, market="hk")
 
 
+def _ca_engine(**overrides) -> GlobalEquityEngine:
+    config = {"initial_cash": 500_000}
+    config.update(overrides)
+    return GlobalEquityEngine(config, market="ca")
+
+
 # ---------------------------------------------------------------------------
 # can_execute: T+0 both directions
 # ---------------------------------------------------------------------------
@@ -56,6 +63,11 @@ class TestCanExecute:
 
     def test_hk_short(self) -> None:
         assert _hk_engine().can_execute("0700.HK", -1, _make_bar()) is True
+
+    def test_canada_long_and_short(self) -> None:
+        engine = _ca_engine()
+        assert engine.can_execute("TD.TO", 1, _make_bar()) is True
+        assert engine.can_execute("PNG.V", -1, _make_bar()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +97,13 @@ class TestRoundSize:
     def test_hk_rounds_down(self) -> None:
         engine = _hk_engine()
         assert engine.round_size(199.0, 80.0) == 100
+
+    def test_canada_uses_whole_shares_but_keeps_odd_lots(self) -> None:
+        engine = _ca_engine()
+        assert engine.round_size(19.9, 85.0) == 19.0
+        assert engine.round_size(1.1, 85.0) == 1.0
+        assert engine.round_size(0.9, 85.0) == 0.0
+        assert engine.round_size(-3.0, 85.0) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +150,11 @@ class TestCommission:
         )
         assert comm == pytest.approx(expected, abs=0.01)
 
+    def test_canada_commission_is_broker_configured(self) -> None:
+        engine = _ca_engine(ca_commission=0.001)
+        assert engine.calc_commission(100, 25.0, 1, is_open=True) == 2.5
+        assert engine.calc_commission(100, 25.0, 1, is_open=False) == 2.5
+
 
 # ---------------------------------------------------------------------------
 # apply_slippage: US low vs HK moderate
@@ -159,6 +183,25 @@ class TestSlippage:
         )
         assert engine.apply_slippage(100.0, 1) == pytest.approx(100.2)
 
+    @pytest.mark.parametrize(
+        ("price", "direction", "expected"),
+        [
+            (10.001, 1, 10.01),
+            (10.009, -1, 10.00),
+            (0.421, 1, 0.425),
+            (0.424, -1, 0.420),
+        ],
+    )
+    def test_canada_rounds_against_trader_on_official_tick_grid(
+        self, price: float, direction: int, expected: float,
+    ) -> None:
+        engine = _ca_engine(slippage_ca=0.0)
+        assert engine.apply_slippage(price, direction) == expected
+
+    def test_canada_slippage_is_configurable(self) -> None:
+        engine = _ca_engine(slippage_ca=0.001)
+        assert engine.apply_slippage(100.0, 1) == 100.1
+
 
 # ---------------------------------------------------------------------------
 # Market parameter
@@ -173,3 +216,7 @@ class TestMarketParam:
     def test_hk_market(self) -> None:
         engine = GlobalEquityEngine({"initial_cash": 100_000}, market="hk")
         assert engine.market == "hk"
+
+    def test_canada_market(self) -> None:
+        engine = GlobalEquityEngine({"initial_cash": 100_000}, market="ca")
+        assert engine.market == "ca"

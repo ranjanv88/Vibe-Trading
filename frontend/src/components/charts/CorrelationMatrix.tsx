@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import i18n from "@/i18n";
-import { echarts } from "@/lib/echarts";
 import { getChartTheme } from "@/lib/chart-theme";
-import { useThemeDark } from "@/lib/theme-store";
+import { escapeHtml } from "@/lib/escapeHtml";
+import { useChartLifecycle } from "@/hooks/useChartLifecycle";
 
 interface Props {
   labels: string[];
@@ -10,29 +10,42 @@ interface Props {
   height?: number;
 }
 
+const RDBU_STOPS = ["#2166ac", "#4393c3", "#92c5de", "#d1e5f0", "#f7f7f7", "#fddbc7", "#f4a582", "#d6604d", "#b2182b"];
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function cellTextColor(value: number): string {
+  const pos = Math.min(1, Math.max(0, (value + 1) / 2)) * (RDBU_STOPS.length - 1);
+  const idx = Math.min(RDBU_STOPS.length - 2, Math.floor(pos));
+  const frac = pos - idx;
+  const [r1, g1, b1] = hexToRgb(RDBU_STOPS[idx]);
+  const [r2, g2, b2] = hexToRgb(RDBU_STOPS[idx + 1]);
+  const luminance = (0.299 * (r1 + (r2 - r1) * frac) + 0.587 * (g1 + (g2 - g1) * frac) + 0.114 * (b1 + (b2 - b1) * frac)) / 255;
+  return luminance > 0.55 ? "#1f2937" : "#ffffff";
+}
+
 export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const dark = useThemeDark();
 
-  useEffect(() => {
-    if (!ref.current || labels.length === 0 || matrix.length === 0) return;
-
+  useChartLifecycle(ref, () => {
     const t = getChartTheme();
-    const chart = echarts.init(ref.current);
 
-    // Build heatmap data: [xIdx, yIdx, value]
-    const data: [number, number, number][] = [];
+    // Build heatmap data: [xIdx, yIdx, value] with per-cell label color for readability on saturated cells
+    const data: { value: [number, number, number]; label: { color: string } }[] = [];
     for (let i = 0; i < labels.length; i++) {
       for (let j = 0; j < labels.length; j++) {
-        const val = matrix[i]?.[j] ?? 0;
-        data.push([j, i, parseFloat(val.toFixed(4))]);
+        const val = parseFloat((matrix[i]?.[j] ?? 0).toFixed(4));
+        data.push({ value: [j, i, val], label: { color: cellTextColor(val) } });
       }
     }
 
     const minVal = -1;
     const maxVal = 1;
 
-    chart.setOption({
+    return {
       backgroundColor: "transparent",
       tooltip: {
         position: "top",
@@ -40,9 +53,9 @@ export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
         borderColor: t.tooltipBorder,
         textStyle: { color: t.tooltipText, fontSize: 12 },
         formatter: (params: unknown) => {
-          const p = params as { data: [number, number, number] };
-          const [x, y, v] = p.data;
-          return `<b>${labels[x]}</b> vs <b>${labels[y]}</b><br/>r = <b>${v.toFixed(4)}</b>`;
+          const p = params as { data: { value: [number, number, number] } };
+          const [x, y, v] = p.data.value;
+          return `<b>${escapeHtml(labels[x] ?? "")}</b> vs <b>${escapeHtml(labels[y] ?? "")}</b><br/>r = <b>${v.toFixed(4)}</b>`;
         },
       },
       grid: { left: "3%", right: "8%", top: "8%", bottom: "12%", containLabel: true },
@@ -75,7 +88,7 @@ export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
         top: "center",
         textStyle: { color: t.textColor, fontSize: 11 },
         inRange: {
-          color: ["#2166ac", "#4393c3", "#92c5de", "#d1e5f0", "#f7f7f7", "#fddbc7", "#f4a582", "#d6604d", "#b2182b"],
+          color: RDBU_STOPS,
         },
       },
       series: [
@@ -86,7 +99,6 @@ export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
           label: {
             show: labels.length <= 8,
             fontSize: 10,
-            color: t.textColor,
             formatter: (params: unknown) => {
               const p = params as { value: [number, number, number] };
               return p.value[2].toFixed(2);
@@ -97,25 +109,10 @@ export function CorrelationMatrix({ labels, matrix, height = 500 }: Props) {
           },
         },
       ],
-    });
-
-    let resizeFrame: number | null = null;
-    const ro = new ResizeObserver(() => {
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      resizeFrame = requestAnimationFrame(() => {
-        resizeFrame = null;
-        chart.resize();
-      });
-    });
-    ro.observe(ref.current!);
-    return () => {
-      ro.disconnect();
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
-      chart.dispose();
     };
-  }, [labels, matrix, dark]);
+  }, [labels, matrix]);
 
-  if (labels.length === 0) {
+  if (labels.length === 0 || matrix.length === 0) {
     return <div className="text-muted-foreground text-sm p-4">{i18n.t("charts.noCorrelationData")}</div>;
   }
   return <div ref={ref} style={{ height }} />;

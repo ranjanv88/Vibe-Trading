@@ -1,4 +1,4 @@
-"""yfinance-backed loader for HK/US equity OHLCV data."""
+"""yfinance-backed loader for global equity and crypto OHLCV data."""
 
 from __future__ import annotations
 
@@ -9,15 +9,17 @@ from typing import Dict, List, Optional, Union
 import pandas as pd
 import yfinance as yf
 
-logger = logging.getLogger(__name__)
-
 from backtest.loaders.base import (
+    declared_currency_required,
     loader_cache_get,
     loader_cache_put,
+    normalize_declared_quote_currency,
     validate_date_range,
     validate_ohlc,
 )
 from backtest.loaders.registry import register
+
+logger = logging.getLogger(__name__)
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 _COLUMN_RENAMES = {
@@ -52,14 +54,17 @@ def _to_yfinance_symbol(code: str) -> str:
     """Convert project symbols into yfinance symbols.
 
     Args:
-        code: Project symbol, for example ``AAPL.US`` or ``700.HK``.
+        code: Project symbol, for example ``AAPL.US``, ``700.HK``, or
+            ``TD.TO``.
 
     Returns:
         yfinance-compatible symbol.
     """
     upper = code.strip().upper()
     if upper.endswith(".US"):
-        return upper[:-3]
+        # US class shares are hyphenated on Yahoo/yfinance (BRK-B): the dot
+        # form returns empty data (live-verified), so map BRK.B.US -> BRK-B.
+        return upper[:-3].replace(".", "-")
     if upper.endswith(".HK"):
         digits = upper[:-3]
         width = max(4, len(digits))
@@ -69,8 +74,9 @@ def _to_yfinance_symbol(code: str) -> str:
         return upper[:-5] + "-USD"
     if upper.endswith("-USDC"):
         return upper[:-5] + "-USD"
-    # India NSE/BSE (RELIANCE.NS, 500325.BO) and Korea KRX (005930.KS,
-    # 247540.KQ): yfinance carries these suffixes as-is.
+    # India NSE/BSE (RELIANCE.NS, 500325.BO), Korea KRX (005930.KS,
+    # 247540.KQ), Canada TSX/TSXV (TD.TO, PNG.V), and Vietnam HOSE (VIC.VN):
+    # yfinance carries these suffixes as-is.
     return upper
 
 
@@ -90,6 +96,22 @@ def _to_yfinance_interval(interval: str) -> str:
 def _to_yfinance_exclusive_end(end_date: str) -> str:
     """Convert the project-inclusive end date to yfinance's exclusive end."""
     return (pd.Timestamp(end_date).normalize() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _declared_currency(symbol: str) -> Optional[str]:
+    """Return Yahoo's declared currency for ``symbol``, or ``None`` when absent.
+
+    ``yf.Ticker(...).history_metadata`` carries the exchange's declared quote
+    currency. Absence (or any probe failure) MUST NOT be treated as GBp. The
+    LSE loader contract rejects a missing or non-GBP currency rather than
+    allowing a USD line into static GBP accounting.
+    """
+    try:
+        meta = yf.Ticker(symbol).history_metadata
+    except Exception:  # noqa: BLE001 — a metadata probe failure is not data
+        return None
+    currency = meta.get("currency") if isinstance(meta, dict) else None
+    return currency if isinstance(currency, str) and currency else None
 
 
 def _download_history(
@@ -114,7 +136,9 @@ def _download_history(
         start=start_date,
         end=end_date,
         interval=interval,
-        auto_adjust=False,
+        # Adjusted OHLC like every other loader on the chain (qfq caliber);
+        # volume stays raw on both sides of the comparison.
+        auto_adjust=True,
         progress=False,
     )
 
@@ -203,7 +227,12 @@ def _normalize_frame(frame: pd.DataFrame, requested_interval: str) -> pd.DataFra
     normalized = normalized.dropna(subset=["open", "high", "low", "close"])
     normalized = validate_ohlc(normalized)
 
-    if requested_interval == "4H" and not normalized.empty:
+    # ``requested_interval`` reaches here with whatever case the caller used
+    # (``_INTERVAL_MAP`` accepts both ``4H`` and ``4h``). A case-sensitive
+    # check here let lowercase ``4h`` fetch hourly data via
+    # ``_to_yfinance_interval`` but skip this resample, silently returning
+    # native 1h bars mislabeled as 4H.
+    if str(requested_interval).strip().upper() == "4H" and not normalized.empty:
         normalized = normalized.resample("4h").agg(
             {
                 "open": "first",
@@ -221,10 +250,17 @@ def _normalize_frame(frame: pd.DataFrame, requested_interval: str) -> pd.DataFra
 
 @register
 class DataLoader:
-    """Fetch HK/US equity bars from Yahoo Finance via yfinance."""
+    """Fetch global-equity and crypto bars from Yahoo Finance via yfinance."""
 
     name = "yfinance"
-    markets = {"us_equity", "hk_equity", "india_equity", "kr_equity", "crypto"}
+    markets = {
+        "us_equity", "hk_equity", "india_equity", "kr_equity", "ca_equity",
+        "vietnam_equity", "uk_equity", "ar_equity", "crypto",
+    }
+    # yfinance volume is single shares for US/HK equities
+    # (HKUDS/Vibe-Trading#1062; HK verified 2026-08-11, 00700.HK ratio 1.00
+    # vs tencent/eastmoney). Crypto base-asset units stay undeclared.
+    volume_units = {"us_equity": "shares", "hk_equity": "shares", "uk_equity": "shares"}
     requires_auth = False
 
     def is_available(self) -> bool:
@@ -250,7 +286,8 @@ class DataLoader:
         """Fetch OHLCV history keyed by the original project symbols.
 
         Args:
-            codes: Project symbols such as ``AAPL.US`` and ``700.HK``.
+            codes: Project symbols such as ``AAPL.US``, ``700.HK``, and
+                ``TD.TO``.
             start_date: Start date in ``YYYY-MM-DD`` format.
             end_date: End date in ``YYYY-MM-DD`` format.
             fields: Ignored for yfinance; included for interface compatibility.
@@ -312,6 +349,17 @@ class DataLoader:
                 if normalized.empty:
                     logger.warning("yfinance returned no usable data for %s", symbol)
                     continue
+
+                # uk_equity is one static GBP pool and ar_equity one ARS pool,
+                # while LSE and BYMA each list lines in other currencies. The
+                # suffix identifies the venue, never the currency, so read the
+                # declared one (a metadata request, made only for these venues)
+                # and reject a line outside the pool's unit.
+                if declared_currency_required(symbol):
+                    declared = _declared_currency(symbol)
+                    normalized = normalize_declared_quote_currency(
+                        normalized, symbol, declared
+                    )
 
                 loader_cache_put(
                     source=self.name,

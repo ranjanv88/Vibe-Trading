@@ -1,6 +1,6 @@
 {
   "app": {
-    "version": "v0.1.13"
+    "version": "v0.1.15"
   },
   "layout": {
     "home": "ホーム",
@@ -8,9 +8,11 @@
     "runtime": "取引モニター",
     "scheduled": "スケジュール",
     "reports": "レポート",
+    "portfolio": "ポートフォリオ",
     "alphaZoo": "アルファ・ライブラリ",
     "settings": "設定",
     "correlation": "相関行列",
+    "optionsLab": "オプションラボ",
     "sessions": "セッション",
     "newChat": "新規チャット",
     "noSessions": "チャットはまだありません。＋を押して始めましょう",
@@ -96,6 +98,10 @@
     "connectorStatusUnavailable": "状態を取得できません",
     "connectedAccessUnknown": "接続済み・アクセス権不明",
     "missingLongbridgeVariables": "設定が不足しています。agent/.env に次の変数を設定し、サービスを再作成してください:",
+    "missingEtoroVariables": "設定が不足しています。次の環境変数を設定するか ~/.vibe-trading/etoro.json を作成してください:",
+    "missingEtoroFileHint": "例: {\"api_key\": \"YOUR_PUBLIC_API_KEY\", \"user_key\": \"YOUR_USER_KEY\", \"profile\": \"live-readonly\"}。プロファイル: etoro-paper-sdk、etoro-live-sdk-readonly、etoro-paper-trade、etoro-live-trade。",
+    "missingConnectorVariables": "設定が不足しています。~/.vibe-trading/ または agent/.env でコネクター認証情報を設定し、接続を検証してください。",
+    "pathSeparatedKeyBound": "デモ/本番パス分離（共有キーペア）",
     "sdkConnectorProfile": "SDK 直接接続・読み取り専用プロファイル",
     "connectionDetails": "接続の詳細",
     "environment": "環境",
@@ -116,9 +122,9 @@
     "connectorVerifyFailed": "接続を検証できませんでした。",
     "diagnosticCredentialsPartial": "認証情報が不足しています。必要な変数をすべて設定し、サービスを再作成してください。",
     "diagnosticCredentialsConflict": "認証情報の取得元が競合しています。完全な取得元を1つだけ残して、再試行してください。",
-    "diagnosticSdkMissing": "バックエンドサービスに Longbridge SDK がインストールされていません。",
+    "diagnosticSdkMissing": "このブローカーに必要な SDK がバックエンドサービスにインストールされていません。",
     "diagnosticAuthenticationFailed": "認証に失敗しました。設定した認証情報を確認してください。",
-    "diagnosticNetworkUnreachable": "Longbridge サービスに接続できません。ネットワーク接続を確認して再試行してください。",
+    "diagnosticNetworkUnreachable": "ブローカーのサービスまたはローカルゲートウェイに接続できません。接続先アドレスとネットワーク接続を確認して再試行してください。",
     "diagnosticBrokerError": "ブローカーが読み取り専用の検証リクエストを拒否しました。再試行するか、バックエンドのログを確認してください。"
   },
   "scheduled": {
@@ -152,12 +158,46 @@
     "statusCompleted": "完了",
     "statusFailed": "失敗",
     "statusCancelled": "キャンセル済み",
+    "statusExpired": "期限切れ",
+    "noFurtherRuns": "以後の実行はありません",
+    "endsAt": "終了: {{when}}",
+    "proposalCreateTitle": "定期リサーチの確認 · 作成",
+    "proposalCancelTitle": "定期リサーチの確認 · キャンセル",
+    "proposalConfirmed": "確認済み",
+    "proposalDiscarded": "破棄済み",
+    "proposalExpired": "期限切れ",
+    "proposalCadence": "実行間隔",
+    "proposalTimezone": "タイムゾーン",
+    "proposalEndAt": "終了時刻",
+    "proposalNoEnd": "なし",
+    "proposalDelivery": "結果の配信",
+    "proposalInApp": "アプリ内のみ",
+    "proposalDiscard": "破棄",
+    "proposalConfirmCreate": "作成を確認",
+    "proposalConfirmCancel": "キャンセルを確認",
     "nextRun": "次回実行：{{when}}",
     "lastError": "直近のエラー：{{error}}",
     "delete": "削除",
     "deleteAria": "スケジュールを削除：{{prompt}}",
     "confirmDelete": "削除を確認",
-    "confirmDeleteAria": "スケジュールの削除を確認：{{prompt}}"
+    "confirmDeleteAria": "スケジュールの削除を確認：{{prompt}}",
+    "deliveryChannelLabel": "配信先チャンネル",
+    "deliveryChannelPlaceholder": "telegram、feishu など（空欄ならアプリ内のみ）",
+    "deliveryTargetLabel": "チャンネル送信先",
+    "deliveryTargetPlaceholder": "チャット / グループ / ユーザー ID",
+    "deliveryHint": "既定はオフです。ブリーフィングは実行の**完了後**に配信され、スケジュール時ではありません。",
+    "deliveryTargetRequired": "そのチャンネルの送信先を指定するか、チャンネルを空にしてください。",
+    "delivery_none": "次回の実行完了後に {{channel}} へ配信します",
+    "delivery_pending": "{{channel}} への配信待ちです",
+    "delivery_sending": "{{channel}} へ配信中です",
+    "delivery_accepted": "{{channel}} が配信を受け付けました（プロバイダー受領確認なし）",
+    "delivery_sent": "{{channel}} へ配信しました",
+    "delivery_failed": "{{channel}} へ配信できませんでした",
+    "verdictEmpty": "判定はまだありません",
+    "verdictUnreadable": "最新の判定を読み取れません",
+    "verdictNoCalls": "コールなし",
+    "verdictDelta": "{{was}} → {{now}}",
+    "verdictRecorded": "{{when}} 時点"
   },
   "reports": {
     "badge": "レポート",
@@ -376,13 +416,387 @@
       "stoppedToast": "IM チャンネルを停止しました",
       "refreshFailed": "IM チャンネルの更新に失敗しました",
       "startFailed": "IM チャンネルの開始に失敗しました",
-      "stopFailed": "IM チャンネルの停止に失敗しました"
+      "stopFailed": "IM チャンネルの停止に失敗しました",
+      "config": {
+        "toggleConfig": "{{name}} を設定",
+        "keepCurrent": "現在の値を使用（{{masked}}）",
+        "secretNotSet": "未設定",
+        "clearSecret": "クリア",
+        "required": "必須",
+        "listPlaceholder": "値を入力して Enter で追加",
+        "removeValue": "{{value}} を削除",
+        "save": "設定を保存",
+        "hotApply": "保存するとすぐに反映されます。再起動は不要です。",
+        "saved": "チャンネル設定を保存しました",
+        "saveFailed": "チャンネル設定の保存に失敗しました: {{message}}",
+        "test": "接続テスト",
+        "testing": "テスト中…",
+        "testOk": "接続を確認しました",
+        "testFailed": "接続テストに失敗しました: {{message}}",
+        "testCodeOk": "プロバイダーがこの認証情報を受け付けました。",
+        "testCodeInvalidCredentials": "プロバイダーがこの認証情報を拒否しました。",
+        "testCodeNetwork": "プロバイダーに接続できませんでした。",
+        "testCodeUnsupported": "このチャンネルは接続テストに対応していません。",
+        "testedSavedConfig": "保存済みの設定をテストしました。",
+        "testedDraftConfig": "フォーム上の値（未保存）をテストしました。",
+        "enable": "チャンネルを有効化",
+        "enableHint": "無効化しても認証情報は保持され、いつでも再有効化できます。",
+        "enabledToast": "チャンネルを有効化しました",
+        "disabledToast": "チャンネルを無効化しました",
+        "enableFailed": "チャンネルの有効化に失敗しました: {{message}}",
+        "disableFailed": "チャンネルの無効化に失敗しました: {{message}}",
+        "enableRejected": "プロバイダーが認証情報を拒否したため、チャンネルは有効化されませんでした。",
+        "enableRejectedDetail": "プロバイダーの応答: {{detail}}",
+        "enableAnyway": "それでも有効化",
+        "enableAnywayHint": "それでも有効化すると認証情報の検証をスキップします。接続に失敗する可能性があります。",
+        "notWritable": "チャンネル設定は YAML ファイル（{{path}}）に保存されているため、Web UI からは編集できません。認証情報を変更するにはファイルを直接編集してください。",
+        "notWritableChip": "読み取り専用（YAML）",
+        "sdkMissing": "ランタイム SDK が未インストール — {{hint}}",
+        "sdkMissingNoHint": "ランタイム SDK が未インストールです。設定はできますが、起動できない場合があります。",
+        "noFields": "このチャンネルに設定可能な項目はありません。",
+        "loadFailed": "チャンネル設定を読み込めませんでした。"
+      },
+      "fields": {
+        "dingtalk": {
+          "client_id": {
+            "label": "Client ID（AppKey）",
+            "help": "DingTalk 開発者コンソールの「認証情報」ページにあるアプリの AppKey です。"
+          },
+          "client_secret": {
+            "label": "Client Secret（AppSecret）",
+            "help": "アプリの AppSecret。サーバー側に保存され、ブラウザーには返されません。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと対話できる DingTalk 送信者 ID の許可リスト（「*」で全員許可）。未ペアの送信者には DM でペアリングコードが送られます。"
+          },
+          "allow_remote_media_redirects": {
+            "label": "メディアのリダイレクトを許可",
+            "help": "メッセージのメディアをダウンロードする際にプロバイダーのリダイレクトを追跡します（既定はオフ）。"
+          },
+          "remote_media_redirect_allowed_hosts": {
+            "label": "許可するリダイレクト先ホスト",
+            "help": "メディアリダイレクトを有効にしたときに許可するホスト。空の場合、クロスホストのリダイレクトはすべて拒否されます。"
+          },
+          "group_user_isolation": {
+            "label": "グループでユーザーごとにセッション分離",
+            "help": "グループチャットの各メンバーに個別のエージェントセッションを割り当てます。"
+          },
+          "force_ipv4": {
+            "label": "IPv4 を強制",
+            "help": "DingTalk API 呼び出しを IPv4 にバインドします。送信元 IP ホワイトリストがあり、IPv6 プレフィックスは変動するが IPv4 は安定している場合に有効にします。"
+          }
+        },
+        "qq": {
+          "app_id": {
+            "label": "AppID",
+            "help": "QQ 公式プラットフォーム（q.qq.com）のアプリ設定にあるボットの AppID です。"
+          },
+          "secret": {
+            "label": "AppSecret",
+            "help": "ボットの AppSecret。サーバー側に保存され、ブラウザーには返されません。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと対話できる QQ 送信者 openid の許可リスト（「*」で全員許可）。未ペアの送信者には DM でペアリングコードが送られます。"
+          },
+          "msg_format": {
+            "label": "メッセージ形式",
+            "help": "返信形式：plain または markdown。"
+          },
+          "ack_message": {
+            "label": "確認メッセージ",
+            "help": "メッセージ受信時にすぐ送信する確認応答。空欄にすると送信しません。"
+          },
+          "media_dir": {
+            "label": "メディアディレクトリ",
+            "help": "受信した添付ファイルの保存先。空欄の場合は ~/.vibe-trading/media/qq を使用します。"
+          },
+          "download_chunk_size": {
+            "label": "ダウンロードチャンクサイズ",
+            "help": "添付ファイルをダウンロードする際の 1 チャンクあたりのバイト数（既定 262144）。"
+          },
+          "download_max_bytes": {
+            "label": "最大ダウンロードサイズ（バイト）",
+            "help": "1 つの添付ファイルのダウンロードに対する安全上限（既定 209715200＝200 MB）。"
+          }
+        },
+        "email": {
+          "consent_granted": {
+            "label": "同意済み",
+            "help": "マスター許可スイッチ。ここで明示的に同意するまで、このチャンネルはメールを読み取り・送信しません。"
+          },
+          "imap_host": {
+            "label": "IMAP ホスト",
+            "help": "受信メールサーバーのホスト名（例: imap.gmail.com）。新着メールはこのサーバーから IMAP でポーリングします。"
+          },
+          "imap_port": {
+            "label": "IMAP ポート",
+            "help": "受信ポート（既定 993、SSL 使用）。"
+          },
+          "imap_username": {
+            "label": "IMAP ユーザー名",
+            "help": "IMAP のログインに使うメールボックスアカウント。通常はメールアドレス全体です。"
+          },
+          "imap_password": {
+            "label": "IMAP パスワード",
+            "help": "IMAP 用のメールボックスパスワードまたはアプリパスワード。サーバー側にのみ保存され、ブラウザーには返されません。"
+          },
+          "imap_mailbox": {
+            "label": "IMAP メールボックス",
+            "help": "新着メールをポーリングするフォルダー（既定 INBOX）。"
+          },
+          "imap_use_ssl": {
+            "label": "IMAP SSL",
+            "help": "SSL 経由で IMAP に接続します（既定オン。ポート 993 では必須）。"
+          },
+          "imap_use_tls": {
+            "label": "IMAP STARTTLS",
+            "help": "IMAP SSL がオフのとき、ログイン前に STARTTLS で接続を暗号化します（既定オン。ポート 143 の標準）。TLS に対応しないサーバーを信頼できるネットワークで使う場合のみオフにしてください。オフにするとパスワードが平文で送信されます。"
+          },
+          "smtp_host": {
+            "label": "SMTP ホスト",
+            "help": "送信メールサーバーのホスト名（例: smtp.gmail.com）。返信はこのサーバー経由で送信されます。"
+          },
+          "smtp_port": {
+            "label": "SMTP ポート",
+            "help": "送信ポート（既定 587、STARTTLS 使用。465 は暗黙的 SSL 用）。"
+          },
+          "smtp_username": {
+            "label": "SMTP ユーザー名",
+            "help": "SMTP 認証に使うアカウント。通常はメールアドレス全体です。"
+          },
+          "smtp_password": {
+            "label": "SMTP パスワード",
+            "help": "SMTP 用のパスワードまたはアプリパスワード。サーバー側にのみ保存され、ブラウザーには返されません。"
+          },
+          "smtp_use_tls": {
+            "label": "SMTP STARTTLS",
+            "help": "STARTTLS で SMTP 接続を暗号化します（既定オン。ポート 587 の標準）。実際には SMTP SSL と併用しません。"
+          },
+          "smtp_use_ssl": {
+            "label": "SMTP SSL",
+            "help": "暗黙的 TLS で SMTP に接続します（例: ポート 465、既定オフ）。実際には STARTTLS と併用しません。"
+          },
+          "verify_tls": {
+            "label": "TLS 証明書を検証",
+            "help": "メールサーバーの TLS 証明書とホスト名を検証します（推奨）。自己署名または社内 CA のサーバーの場合のみ無効にしてください。"
+          },
+          "from_address": {
+            "label": "送信元アドレス",
+            "help": "返信メールの送信元アドレス。空欄の場合は SMTP ユーザー名を使用します。"
+          },
+          "auto_reply_enabled": {
+            "label": "自動返信",
+            "help": "受信メールに自動で返信します。エージェントが主体的に行う送信には影響しません。"
+          },
+          "poll_interval_seconds": {
+            "label": "ポーリング間隔（秒）",
+            "help": "IMAP で新着メールを確認する頻度（既定 30、最小 5）。"
+          },
+          "mark_seen": {
+            "label": "既読にする",
+            "help": "処理済みのメールをメールボックスで既読にします。"
+          },
+          "post_action": {
+            "label": "処理後の動作",
+            "help": "処理済みメールの扱い: delete（削除）、move（別フォルダーへ移動）、空欄ならそのまま保持。"
+          },
+          "post_action_move_mailbox": {
+            "label": "移動先メールボックス",
+            "help": "「処理後の動作」で move を選んだ場合の移動先フォルダー。"
+          },
+          "post_action_expunge": {
+            "label": "削除後に expunge",
+            "help": "削除したメールに削除フラグを残さず、完全に消去します。"
+          },
+          "post_action_ignore_skipped": {
+            "label": "自分と除外メールは対象外",
+            "help": "スキップされたメール（自分のメールや許可リストで除外された送信者）には処理後の動作を適用しません（既定オン）。"
+          },
+          "max_body_chars": {
+            "label": "本文の最大文字数",
+            "help": "メール本文をこの文字数で切り詰めます（既定 12000）。"
+          },
+          "subject_prefix": {
+            "label": "返信の件名プレフィックス",
+            "help": "返信の件名に付けるプレフィックス（既定 \"Re: \"）。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと対話できるメールアドレスの許可リスト（任意、\"*\" で全員を許可）。未ペアリングの送信者には返信でペアリングコードが届きます。"
+          },
+          "verify_dkim": {
+            "label": "DKIM を検証",
+            "help": "Authentication-Results ヘッダーに dkim=pass を要求します。DKIM と SPF の両方を無効にすると、偽装された From ヘッダーを受け入れます。"
+          },
+          "verify_spf": {
+            "label": "SPF を検証",
+            "help": "Authentication-Results ヘッダーに spf=pass を要求します。DKIM と SPF の両方を無効にすると、偽装された From ヘッダーを受け入れます。"
+          },
+          "allowed_attachment_types": {
+            "label": "許可する添付タイプ",
+            "help": "受信添付ファイルの MIME 許可リスト（例: application/pdf、image/*）。空欄にすると添付が無効になります。"
+          },
+          "max_attachment_size": {
+            "label": "添付サイズ上限（バイト）",
+            "help": "1 件の添付ファイルの最大バイト数（既定 2000000 = 2 MB）。"
+          },
+          "max_attachments_per_email": {
+            "label": "1 通あたりの添付数上限",
+            "help": "1 通のメールから受け入れる添付ファイルの最大数（既定 5）。"
+          }
+        },
+        "websocket": {
+          "host": {
+            "label": "バインドホスト",
+            "help": "WebSocket サーバーがバインドするローカルアドレス（既定 127.0.0.1、ローカル専用）。0.0.0.0 や :: などのワイルドカードホストは全インターフェースに公開されるため、トークンまたはトークン発行シークレットがないと拒否されます。"
+          },
+          "port": {
+            "label": "バインドポート",
+            "help": "WebSocket サーバーが待ち受けるローカルポート（既定 8765）。Unix ソケットパスを設定した場合は無視されます。"
+          },
+          "unix_socket_path": {
+            "label": "Unix ソケットパス",
+            "help": "任意の絶対パス。設定すると、ホストとポートの代わりにこの Unix ソケットで待ち受けます。"
+          },
+          "path": {
+            "label": "アップグレードパス",
+            "help": "クライアントが接続する WebSocket アップグレードパス（既定 /）。「/」で始まる必要があります。"
+          },
+          "token": {
+            "label": "静的トークン",
+            "help": "ハンドシェイク時に token クエリパラメーターで照合する共有シークレット。サーバー側にのみ保存され、ブラウザーには返されません。"
+          },
+          "token_issue_path": {
+            "label": "トークン発行パス",
+            "help": "短期のワンタイムトークンを JSON で返す HTTP GET ルート。アップグレードパスとは別の値にする必要があります。"
+          },
+          "token_issue_secret": {
+            "label": "トークン発行シークレット",
+            "help": "トークン発行ルートが要求する Bearer シークレット（Authorization: Bearer または X-Vibe-Trading-Auth）。サーバー側にのみ保存され、ブラウザーには返されません。"
+          },
+          "token_ttl_s": {
+            "label": "発行トークンの TTL（秒）",
+            "help": "トークン発行ルートが発行するトークンの有効期間（秒、30〜86400、既定 300）。"
+          },
+          "websocket_requires_token": {
+            "label": "トークンを必須にする",
+            "help": "有効な静的トークンまたは発行済みトークンを持たないハンドシェイクを拒否します（既定オン）。"
+          },
+          "allow_from": {
+            "label": "許可するクライアント",
+            "help": "接続を許可するクライアント ID の許可リスト（任意、\"*\" で全員を許可、既定）。"
+          },
+          "streaming": {
+            "label": "出力をストリーミング",
+            "help": "モデル出力の差分を、生成されるそばから接続中のクライアントへ配信します。"
+          },
+          "max_message_bytes": {
+            "label": "メッセージ上限（バイト）",
+            "help": "受け入れる受信フレームの最大バイト数（既定 37748736、範囲 1024〜41943040）。"
+          },
+          "ping_interval_s": {
+            "label": "Ping 間隔（秒）",
+            "help": "キープアライブ ping を送る間隔（5〜300、既定 20）。"
+          },
+          "ping_timeout_s": {
+            "label": "Ping タイムアウト（秒）",
+            "help": "ping 応答を待つ秒数。超えると接続を切断します（5〜300、既定 20）。"
+          },
+          "ssl_certfile": {
+            "label": "TLS 証明書パス",
+            "help": "WSS 用のサーバー上の PEM 証明書パス。証明書と鍵は両方を設定するか、両方空にしてください。アップロード素材ではなくサーバー上のファイルパスです。"
+          },
+          "ssl_keyfile": {
+            "label": "TLS 鍵パス",
+            "help": "WSS 用のサーバー上の PEM 秘密鍵パス。証明書と鍵は両方を設定するか、両方空にしてください。アップロード素材ではなくサーバー上のファイルパスです。"
+          }
+        }
+      },
+      "guides": {
+        "dingtalk": {
+          "title": "DingTalk セットアップガイド",
+          "intro": "DingTalk ボットは Stream モードを使うため、公開コールバック URL は不要です。",
+          "step1": "DingTalk 開発者コンソール（open-dev.dingtalk.com）でアプリを作成します。",
+          "step2": "アプリにボット機能を追加し、Stream モードを有効にします。",
+          "step3": "アプリの AppKey を Client ID に、AppSecret を Client Secret に貼り付けます。",
+          "step4": "アプリを公開して、組織内で利用できるようにします。",
+          "step5": "ここに戻って「接続テスト」をクリックし、チャンネルを有効化します。",
+          "docsLabel": "DingTalk 開発者コンソールを開く"
+        },
+        "qq": {
+          "title": "QQ セットアップガイド",
+          "intro": "QQ ボットは公式 botpy SDK を介して WebSocket で接続するため、公開コールバック URL は不要です。",
+          "step1": "QQ 公式プラットフォーム（q.qq.com）に登録し、ボットを作成します。",
+          "step2": "ボットの開発設定ページで AppID と AppSecret をコピーします。",
+          "step3": "それらを上の AppID と AppSecret のフィールドに貼り付けます。",
+          "step4": "プラットフォームのサンドボックス／公開ルールに従って、ボットを QQ グループに追加するか、個別にチャットします。",
+          "step5": "ここに戻って「接続テスト」をクリックし、チャンネルを有効化します。",
+          "docsLabel": "QQ 公式プラットフォームを開く"
+        },
+        "email": {
+          "title": "メール設定ガイド",
+          "intro": "メールチャンネルは受信を IMAP ポーリング、返信を SMTP で行うため、公開コールバック URL は不要です。",
+          "step1": "メールプロバイダーの IMAP / SMTP のホスト名とポートを確認します（通常は imap.<プロバイダー> の 993 と smtp.<プロバイダー> の 587）。",
+          "step2": "メールボックスの設定で IMAP と SMTP を有効にし、プロバイダーが求める場合（Gmail、QQ メールなど 2 段階認証を使う場合）はアプリパスワードを作成します。",
+          "step3": "上の IMAP / SMTP 認証情報を入力し、送信元アドレスを設定して、自分のアドレスを「許可する送信者」に追加します。",
+          "step4": "「接続テスト」をクリックします。IMAP ログイン、メールボックスフォルダー、SMTP ログインの順に確認されます。",
+          "step5": "「同意済み」にチェックを入れてチャンネルを有効にすると、DKIM/SPF 検証を通過した送信者に自動返信が届きます。",
+          "docsLabel": "Vibe-Trading のドキュメントを開く"
+        },
+        "websocket": {
+          "title": "WebSocket 設定ガイド",
+          "intro": "WebSocket チャンネルはローカルサーバーを起動し、クライアントが WebSocket URL で直接接続するため、公開コールバック URL は不要です。",
+          "step1": "バインドアドレスを選びます。ローカル専用なら 127.0.0.1 のまま、外部に公開するなら 0.0.0.0 または :: を設定します（ワイルドカードホストにはトークンまたはトークン発行シークレットが必須です）。",
+          "step2": "静的トークンを設定するか、トークン発行パスとその Bearer シークレットを設定して、クライアントが短期トークンを取得できるようにします。",
+          "step3": "クライアントは ws://host:port/path?client_id=...&token=... で接続します。",
+          "step4": "チャンネル実行中に保存するとサーバーがホットスワップされます。接続中のクライアント（この Web UI チャットを含む）は一時的に切断され、自動的に再接続します。",
+          "step5": "「接続テスト」をクリックすると、SSL 証明書/鍵の素材とアドレスの可用性をローカルで検証します。",
+          "docsLabel": "Vibe-Trading のドキュメントを開く"
+        }
+      }
     },
     "generation": "生成設定",
     "dataSourceSettings": "データソース設定",
     "dataSourceSettingsDesc": "バックテストとリサーチエージェントが使用するオプションのマーケットデータ認証情報を設定します。",
+    "sourcePriority": {
+      "title": "データソースの優先順位",
+      "description": "エージェントが自動でデータを取得する際の、市場ごとのデータソース試行順序を制御します。明示的に指定されたソースには影響しません。",
+      "marketLabel": "市場",
+      "badgeDefault": "デフォルト",
+      "badgeCustom": "カスタム",
+      "customMarkets": "カスタム · {{count}}",
+      "moveUp": "上へ移動",
+      "moveDown": "下へ移動",
+      "resetToDefault": "デフォルトに戻す",
+      "invalidOverrideWarning": "{{envVar}} に保存されたオーバーライドは無効です(同じソースの並べ替えである必要があります)。現在はデフォルト順序が有効です。",
+      "noMarkets": "登録された市場データソースがありません。",
+      "howItWorksTitle": "動作のしくみ",
+      "howItWorks": "自動検出されたシンボルでは、上から順にソースが試行され、失敗したソースは次へフォールスルーします。保存すると再起動なしで即時反映されます。",
+      "caliberCaveat": "留意点:データソースごとに調整基準が異なります — 例えば Yahoo は未調整の OHLC を、Tencent/Eastmoney/Tushare は調整後価格を返します — 順序を変えるとバックテスト結果が変わる可能性があります。",
+      "markets": {
+        "a_share": "中国A株",
+        "us_equity": "米国株",
+        "hk_equity": "香港株",
+        "india_equity": "インド株",
+        "kr_equity": "韓国株",
+        "ca_equity": "カナダ株",
+        "vietnam_equity": "ベトナム株",
+        "ar_equity": "アルゼンチン株",
+        "uk_equity": "英国株",
+        "index": "指数",
+        "crypto": "暗号資産",
+        "futures": "先物",
+        "fund": "ファンド",
+        "macro": "マクロ",
+        "forex": "為替"
+      }
+    },
     "tushareToken": "Tushare トークン",
+    "gildataToken": "Gildata トークン",
     "clearTushareToken": "保存済み Tushare トークンをクリア",
+    "clearGildataToken": "保存済み Gildata トークンをクリア",
     "saveDataSourceSettings": "データソース設定を保存",
     "baostock": "BaoStock",
     "loadLlmSettingsFailed": "LLM 設定の読み込みに失敗: {{message}}",
@@ -390,10 +804,12 @@
     "llmSettingsSaved": "LLM 設定を保存しました",
     "saveLlmSettingsFailed": "LLM 設定の保存に失敗: {{message}}",
     "dataSourceSettingsSaved": "データソース設定を保存しました",
+    "desktopCredentialRestarting": "認証情報を暗号化しました。ローカルサービスを再起動しています…",
     "saveDataSourceSettingsFailed": "データソース設定の保存に失敗: {{message}}",
     "configured": "設定済み",
     "keepCurrentKey": "空欄で現在のキーを保持",
     "providerUsesOauth": "このプロバイダーは OAuth を使用します。実行: {{command}}",
+    "providerUsesManagedAuth": "このプロバイダーが認証を管理します。実行: {{command}}",
     "noApiKeyRequired": "このプロバイダーは API キーを必要としません。",
     "keepCurrentToken": "空欄で現在のトークンを保持",
     "iwencaiApiKey": "iWenCai API キー",
@@ -410,8 +826,10 @@
     "unknownError": "不明なエラー",
     "providerChangeHint": "プロバイダーを変更すると、推奨モデルとエンドポイントが更新されます。",
     "oauth": "OAuth",
+    "authentication": "認証",
     "apiKey": "APIキー",
-    "tushareTokenDesc": "中国A株・先物・ファンド・マクロデータに使用します。未設定の場合、利用可能なところではAKShareにフォールバックします。"
+    "tushareTokenDesc": "中国A株・先物・ファンド・マクロデータに使用します。未設定の場合、利用可能なところではAKShareにフォールバックします。",
+    "gildataTokenDesc": "オプションの恒生聚源（Gildata）中国A株データソース。設定すると、日足（前調整）でA株フォールバックチェーンの末尾に加わります。"
   },
   "qveris": {
     "title": "QVeris ツールマーケットプレイス",
@@ -484,6 +902,9 @@
     "executablesNotAllowed": "実行ファイルとアーカイブはアップロードできません",
     "fileSizeExceeds": "ファイルサイズが 50 MB の上限を超えています",
     "uploaded": "アップロードしました: {{filename}}",
+    "attachmentLimit": "最大 {{count}} 件のファイルを添付できます",
+    "dropFiles": "ここにファイルをドロップ",
+    "removeAttachment": "{{filename}} を削除",
     "uploadFailed": "アップロードに失敗しました: {{error}}",
     "failedToSend": "メッセージ送信に失敗しました。再試行してください。",
     "failedToContinue": "目標の続行に失敗しました。再試行してください。",
@@ -495,7 +916,6 @@
     "haltConnectorTitle": "コネクタの活動を即座に停止",
     "haltConnector": "コネクタを停止",
     "moreOptions": "その他のオプション",
-    "uploadPdf": "PDF ドキュメントをアップロード",
     "researchGoal": "リサーチ目標",
     "agentSwarm": "エージェント Swarm",
     "attachmentChip": "添付ファイル",
@@ -522,7 +942,8 @@
       "failed": "失敗",
       "steps": "{{count}} ステップ",
       "continue": "続行",
-      "reattach": "再接続"
+      "reattach": "再接続",
+      "checkingFigures": "回答内の数値を確認中（{{round}} 回目）…"
     },
     "resumeConnector": "コネクタを再開",
     "resumeConnectorTitle": "キルスイッチを解除してコネクタ活動を再開",
@@ -534,8 +955,30 @@
     "runNotFound": "実行が見つかりません",
     "runNotFoundDesc": "実行ディレクトリが削除されたか、ブラウザに API アクセスが設定されていない可能性があります。リモートでアクセスする場合は、設定で API 認証キーが設定されているか確認してください。",
     "goBack": "戻る",
+    "showFullPrompt": "プロンプト全文を表示",
+    "showLessPrompt": "折りたたむ",
     "chart": "チャート",
     "trades": "トレード",
+    "factor": "ファクター分析",
+    "studio": "ポートフォリオスタジオ",
+    "riskXray": "リスクエックス線",
+    "rebalanceNotes": "リバランスノート",
+    "hhi": "HHI",
+    "effectiveN": "実効N",
+    "annualizedVol": "年率ボラティリティ",
+    "maxDrawdown": "最大ドローダウン",
+    "symbol": "シンボル",
+    "weight": "ウェイト",
+    "rebalanceCount": "目標リバランス回数（要求）",
+    "rebalanceExecuted": "実行されたリバランス数",
+    "rebalanceRealizedTurnover": "実現リバランス回転率",
+    "turnoverMean": "平均ターンオーバー（要求）",
+    "turnoverMax": "最大ターンオーバー（要求）",
+    "largestRebalance": "最大リバランス",
+    "date": "日付",
+    "turnover": "ターンオーバー",
+    "entries": "新規",
+    "exits": "退出",
     "validation": "検証",
     "runCard": "ランカード",
     "code": "コード",
@@ -543,7 +986,6 @@
     "downloadMetricsCsv": "メトリクス CSV をダウンロード",
     "noChartData": "チャートデータがありません",
     "noChartDataDesc": "この実行では価格データが保存されなかったため、チャートは表示できません。下の指標は引き続き有効です。",
-    "symbol": "シンボル",
     "showOnly": "のみ表示",
     "addSymbol": "シンボルを追加",
     "loadAll": "すべて読み込む",
@@ -574,6 +1016,8 @@
     "noBacktestSummary": "バックテストサマリは記録されていません。",
     "noReproducibilityHashes": "再現性ハッシュは記録されていません。",
     "noScalarMetrics": "スカラーメトリクスは記録されていません。",
+    "noStructuredMetrics": "構造化メトリクスは記録されていません。",
+    "structuredMetrics": "構造化メトリクス",
     "noValidationPayload": "検証ペイロードは記録されていません。",
     "noArtifactChecksums": "成果物チェックサムは記録されていません。",
     "noCodeFiles": "コードファイルがありません。",
@@ -593,7 +1037,94 @@
     "sideSell": "売り",
     "copyCode": "コピー",
     "codeCopied": "コードをコピーしました",
-    "codeLines": "{{count}} 行"
+    "codeLines": "{{count}} 行",
+    "tearsheet": "パフォーマンスレポート",
+    "monthlyReturns": "月次リターン",
+    "annualReturns": "年次リターン",
+    "topDrawdowns": "主要ドローダウン",
+    "tearsheetYear": "年間",
+    "noTearsheetData": "パフォーマンスレポートを作成するための資産データが不足しています。",
+    "ddRank": "#",
+    "ddDepth": "下落幅",
+    "ddPeak": "高値",
+    "ddTrough": "安値",
+    "ddRecovery": "回復",
+    "ddPeakToTrough": "高値→安値",
+    "ddTroughToRecovery": "安値→回復",
+    "ddNotRecovered": "未回復",
+    "ddDays": "{{count}}日",
+    "dashboard": "リサーチダッシュボード",
+    "positions": {
+      "tab": "ポジション",
+      "weightDistribution": "ウェイト分布",
+      "sectorDistribution": "セクター分布",
+      "weightEvolution": "ウェイト推移",
+      "pie": "円グラフ",
+      "treemap": "ツリーマップ",
+      "cash": "キャッシュ",
+      "rest": "その他",
+      "restLong": "その他（ロング）",
+      "restShort": "その他（ショート）",
+      "basisGross": "スライスは |ウェート|（証拠金 ÷ 純資産）。現金は未使用残高で、フル投資・レバレッジ時は非表示。",
+      "basisNet": "ネットエクスポージャー：符号付きウェート ÷ 純資産。負の値はネットショート。",
+      "short": "空売り",
+      "resolveIndustries": "業種を解決",
+      "resolving": "解決中...",
+      "resolveFailed": "業種の解決に失敗しました",
+      "retry": "再試行",
+      "asOf": "{{date}} 時点",
+      "noPositions": "この実行にはポジションのウェイトが記録されていません。",
+      "holdingsCount": "{{count}} 銘柄",
+      "assetClass": {
+        "a_share": "A株",
+        "us_equity": "米国株",
+        "hk_equity": "香港株",
+        "ca_equity": "カナダ株",
+        "kr_equity": "韓国株",
+        "india_equity": "インド株",
+        "crypto": "暗号資産",
+        "futures": "先物",
+        "forex": "外国為替",
+        "ar_equity": "アルゼンチン株",
+        "uk_equity": "英国株",
+        "vietnam_equity": "ベトナム株",
+        "other": "その他"
+      }
+    },
+    "attribution": "アトリビューション",
+    "attrBenchmark": "ベンチマーク",
+    "attrPortfolio": "ポートフォリオ",
+    "attrActive": "アクティブ",
+    "attrAutoEqualWeight": "自動等ウェイト",
+    "attrNoBenchmark": "ベンチマーク未設定",
+    "attrModeSymbol": "Brinson モード：銘柄別",
+    "attrModeAssetClass": "Brinson モード：資産クラス別",
+    "attrModeInvestedCash": "Brinson モード：投資現金基準",
+    "attrSector": "セクター",
+    "attrPortfolioWeight": "ポートフォリオ・ウェイト",
+    "attrBenchmarkWeight": "ベンチマーク・ウェイト",
+    "attrPortfolioReturn": "ポートフォリオ収益",
+    "attrBenchmarkReturn": "ベンチマーク収益",
+    "attrAllocation": "配分効果",
+    "attrSelection": "選択効果",
+    "attrInteraction": "交互効果",
+    "attrTotal": "合計",
+    "attrBrinsonTitle": "Brinson アトリビューション",
+    "attrWaterfallTitle": "収益ウォーターフォール",
+    "attrNoBrinson": "この実行には Brinson アトリビューションがありません。",
+    "attrAlpha": "アルファ（年率）",
+    "attrBeta": "ベータ",
+    "attrTStat": "t値: {{value}}",
+    "attrRSquared": "R²",
+    "attrInformationRatio": "情報比率",
+    "attrTrackingError": "トラッキングエラー",
+    "attrNoFactor": "この実行にはファクター・アトリビューションがありません。",
+    "attrRollingTitle": "ローリング Beta と Alpha",
+    "attrRollingWindow": "{{count}} 期間ローリングウィンドウ",
+    "attrCumulativeTitle": "累積収益",
+    "attrLoading": "アトリビューションを読み込み中…",
+    "attrError": "アトリビューションの読み込みに失敗しました。",
+    "attrNoData": "この実行にはアトリビューションデータがありません。"
   },
   "compare": {
     "title": "戦略比較",
@@ -647,6 +1178,112 @@
     "regimeFused": "融合期 (FUSED)",
     "regimeEnterThreshold": "開始しきい値",
     "regimeExitThreshold": "終了しきい値"
+  },
+  "options": {
+    "title": "オプションラボ",
+    "subtitle": "ストラテジービルダー、満期ペイオフ、原資産価格×IVシナリオ、ポートフォリオ・グリークス、米国オプションチェーン。",
+    "disclaimer": "研究目的のみ。理論価格とシナリオ結果はモデルによる推定値であり、投資助言ではありません。",
+    "errorGeneric": "分析に失敗しました",
+    "presets": {
+      "label": "プリセット",
+      "longCall": "ロング・コール",
+      "longPut": "ロング・プット",
+      "bullCallSpread": "ブル・コール・スプレッド",
+      "bearPutSpread": "ベア・プット・スプレッド",
+      "bullPutSpread": "ブル・プット・スプレッド",
+      "bearCallSpread": "ベア・コール・スプレッド",
+      "longStraddle": "ロング・ストラドル",
+      "longStrangle": "ロング・ストラングル",
+      "ironCondor": "アイアン・コンドル",
+      "ironButterfly": "アイアン・バタフライ",
+      "callButterfly": "コール・バタフライ",
+      "ratioCallSpread": "レシオ・コール・スプレッド"
+    },
+    "builder": {
+      "title": "ストラテジービルダー",
+      "legs": "レッグ",
+      "type": "種類",
+      "call": "コール",
+      "put": "プット",
+      "strike": "権利行使価格",
+      "qty": "数量",
+      "premium": "プレミアム",
+      "premiumHint": "プレミアム空欄 = エンジンがBlack-Scholesで価格設定",
+      "qtyHint": "正 = ロング、負 = ショート",
+      "addLeg": "レッグを追加",
+      "removeLeg": "レッグを削除",
+      "parameters": "パラメータ",
+      "entrySpot": "エントリー原資産価格",
+      "expiryDays": "満期までの日数",
+      "volatility": "ボラティリティ（%）",
+      "riskFreeRate": "リスクフリー金利（%）",
+      "multiplier": "乗数",
+      "multiplierHint": "100 = 米国株式標準契約",
+      "commissionRate": "手数料率（%）",
+      "invalidHint": "入力を確認してください：原資産価格と行使価格は正、数量は非ゼロの整数、ボラティリティは正である必要があります。",
+      "analyzing": "分析中…"
+    },
+    "metrics": {
+      "entryCost": "エントリーコスト",
+      "debit": "デビット",
+      "credit": "クレジット",
+      "flat": "フラット",
+      "breakevens": "損益分岐点",
+      "maxProfit": "最大利益",
+      "maxLoss": "最大損失",
+      "unlimited": "無制限",
+      "none": "なし"
+    },
+    "payoff": {
+      "title": "満期ペイオフ",
+      "pnl": "損益",
+      "spot": "満期時の原資産価格",
+      "entrySpot": "スポット",
+      "breakeven": "分岐点",
+      "noData": "ペイオフデータはまだありません。上でストラテジーを構築してください。"
+    },
+    "greeks": {
+      "title": "ポートフォリオ・グリークス",
+      "delta": "デルタ",
+      "deltaDesc": "原資産の相当株数で表した方向性エクスポージャー。",
+      "gamma": "ガンマ",
+      "gammaDesc": "原資産が1ドル動くときのデルタの変化量。",
+      "theta": "シータ",
+      "thetaDesc": "1日あたりのタイム・ディケイ（ドル）。負の値は毎日価値が目減りすることを意味します。",
+      "vega": "ベガ",
+      "vegaDesc": "想定ボラティリティが+1%動いたときの損益（ドル）。",
+      "rho": "ロー",
+      "rhoDesc": "金利が+1%動いたときの損益（ドル）。"
+    },
+    "scenario": {
+      "title": "原資産価格 × IV シナリオマトリクス",
+      "spotAxis": "満期時の原資産価格",
+      "ivAxis": "想定ボラティリティ",
+      "pnl": "損益",
+      "noData": "シナリオグリッドは返されませんでした。"
+    },
+    "chain": {
+      "title": "米国オプションチェーン",
+      "ticker": "ティッカー",
+      "expiration": "満期日",
+      "load": "読み込み",
+      "loading": "チェーンを読み込み中…",
+      "calls": "コール",
+      "puts": "プット",
+      "strike": "行使価格",
+      "last": "現在値",
+      "bid": "ビッド",
+      "ask": "アスク",
+      "spread": "スプレッド%",
+      "volume": "出来高",
+      "openInterest": "建玉",
+      "iv": "IV%",
+      "itm": "ITM",
+      "atm": "ATM",
+      "noData": "この選択に対するコントラクトは返されませんでした。",
+      "errorTitle": "オプションチェーンを利用できません",
+      "retry": "再試行"
+    }
   },
   "alphaZoo": {
     "title": "Alpha ファクターライブラリ",
@@ -840,6 +1477,10 @@
     "running": "実行中",
     "halted": "停止中",
     "authorized": "認可済み",
+    "sdkConnected": "接続済み",
+    "sdkReadOnlyNote": "直接 SDK コネクタ · 読み取り専用プロファイル。実取引には trade プロファイルとコミット済みマンデートが必要です。",
+    "sdkCredentialsRequired": "このコネクタの API 認証情報を設定してください（Runtime を参照）。",
+    "sdkConnectionError": "接続確認に失敗しました。Runtime で認証情報を確認してください。",
     "notConnected": "未接続",
     "connectProfile": "このプロファイルを接続してコネクタを有効化",
     "authorizeNote": "OAuth が成功しマンデートがコミットされるまで、コネクタチャネルは読み取り専用のままです。",
@@ -915,7 +1556,15 @@
     "maxPerOrder": "1注文あたり {{amount}} 以下",
     "expiresOn": "有効期限: {{date}}",
     "accountSummary": "{{broker}}・{{type}}口座・資金提供元: {{fundedBy}}",
-    "adjustRequestMessage": "マンデート案「{{label}}」（選択肢 {{ordinal}}）への調整依頼: {{text}}"
+    "adjustRequestMessage": "マンデート案「{{label}}」（選択肢 {{ordinal}}）への調整依頼: {{text}}",
+    "accountLoading": "ブローカーの口座を読み込んでいます…",
+    "accountLoadFailed": "ブローカーの口座を読み込めませんでした: {{error}}",
+    "accountLabel": "このマンデートで取引できる口座",
+    "accountChoose": "口座を選択",
+    "accountDefault": "・ブローカーの既定",
+    "accountDeactivated": "・無効化済み",
+    "accountNotAgentic": "・エージェント取引は許可されていません",
+    "accountHint": "エージェントはこの口座だけで取引します。自動では選択されません。"
   },
   "messageBubble": {
     "elapsedTime": "合計応答時間",
@@ -1110,5 +1759,239 @@
     "update_research_goal_status": "目標の状態を更新",
     "web_search": "Web を検索",
     "write_file": "コードを生成"
+  },
+  "runDashboard": {
+    "eyebrow": "定量リサーチ · バックテスト",
+    "noBacktestData": "このRunにはグラフ化できるバックテストデータがありません",
+    "noBacktestDataStudioHint": "ポートフォリオ/リスク分析のようです — 数値はStudioタブで確認してください。",
+    "engine": "エンジン",
+    "portfolio": "ポートフォリオ",
+    "systematicStrategy": "システマティック戦略",
+    "strategyInferred": "推定",
+    "strategyMacd": "MACD トレンド戦略",
+    "strategyRsi": "RSI タイミング戦略",
+    "strategyMomentum": "モメンタム戦略",
+    "strategyMeanReversion": "平均回帰戦略",
+    "strategyBreakout": "ブレイクアウト戦略",
+    "strategyMaCrossover": "{{fast}}/{{slow}}日移動平均クロス戦略",
+    "seriesStrategy": "戦略",
+    "seriesBenchmark": "ベンチマーク",
+    "seriesDrawdown": "ドローダウン",
+    "seriesRollingSharpe": "ローリングシャープ（20）",
+    "kpiTotalReturn": "総リターン",
+    "kpiAnnualReturn": "年率リターン",
+    "kpiMaxDrawdown": "最大ドローダウン",
+    "kpiWinRate": "勝率",
+    "kpiTrades": "取引回数",
+    "figEquityTitle": "資産推移とベンチマーク",
+    "figEquityNote": "戦略の資産成長をベンチマークと比較します。",
+    "figRiskTitle": "ドローダウンとローリングリスク",
+    "figRiskNote": "損失が深まり、リスク調整後パフォーマンスが変化した時点を確認します。",
+    "figPnlTitle": "実現損益",
+    "figPnlNote": "完了した取引による損益です。",
+    "figLedgerTitle": "取引明細",
+    "figLedgerNote": "直近 100 件の取引を時系列で確認します。",
+    "figMetricsTitle": "パフォーマンス指標",
+    "figMetricsNote": "リターン・リスク・取引統計の総括です。",
+    "noTrades": "取引記録がありません。",
+    "colTime": "時刻",
+    "colSymbol": "銘柄",
+    "colSide": "売買",
+    "colPrice": "価格",
+    "colQty": "数量",
+    "colPnl": "損益",
+    "colReason": "理由"
+  },
+  "factor": {
+    "title": "ファクター分析",
+    "selectFactor": "ファクターを選択",
+    "icSeries": "日次 IC",
+    "icMa": "20期間移動平均",
+    "icStats": "IC 統計",
+    "icMean": "IC 平均",
+    "icStd": "IC 標準偏差",
+    "ir": "IR",
+    "icPositiveRatio": "IC>0 比率",
+    "icCount": "IC サンプル数",
+    "longShortSpread": "ロング・ショート差",
+    "nGroups": "分位グループ数",
+    "quantileEquity": "分位グループ純資産",
+    "quantileEquityNote": "Group_1 はファクター値が最も低いグループ、Group_N は最も高いグループです。上位と下位の分位グループ間の差が選別力を示します。",
+    "correlation": "IC 相関",
+    "correlationNote": "各ファクターの日次 IC 時系列のペアワイズ相関。相関が高いファクターは重複した情報を持ちます。",
+    "insufficientOverlap": "ファクター IC シリーズの共通日付の重複が不十分なため、IC 相関を計算できません。",
+    "loading": "ファクター分析結果を読み込み中…",
+    "error": "ファクター分析結果の読み込みに失敗しました",
+    "noFactorData": "この実行には利用可能なファクター分析結果がありません。"
+  },
+  "portfolio": {
+    "page": {
+      "badge": "ローカル読み取り専用 · 複数口座",
+      "title": "ポートフォリオ",
+      "subtitle": "有効な読み取り専用接続をまとめて 1 つの評価にします。読み取れなかった口座はエラーとして表示され、合計には含まれません。",
+      "fxFresh": "USD/CNY {{rate}} · 最新レート",
+      "fxCached": "USD/CNY {{rate}} · キャッシュされたレート",
+      "manageAccounts": "口座を管理",
+      "exportCsv": "CSV を書き出す",
+      "refreshAll": "すべて更新",
+      "refreshing": "更新中",
+      "warningsTitle": "データに関する注記",
+      "emptyTitle": "ポートフォリオのスナップショットがまだありません",
+      "emptyBody": "読み取り専用の口座を 1 つ以上追加すると集計が始まります。",
+      "emptyAction": "口座を追加",
+      "errorLoad": "ポートフォリオを取得できません",
+      "errorRefresh": "更新に失敗しました",
+      "errorReconnect": "口座の再接続に失敗しました",
+      "errorReconnectTimeout": "ブラウザー認証がタイムアウトしました。再接続し、ブローカー認証を速やかに完了してください。",
+      "errorSaveSettings": "ポートフォリオ設定を保存できません",
+      "errorExport": "書き出しに失敗しました"
+    },
+    "metrics": {
+      "total": "総資産",
+      "change": "本日の資産変動",
+      "changeNote": "相場変動と入出金を含みます",
+      "coverage": "評価カバレッジ",
+      "coverageNote": "評価済み {{priced}} · 現金 {{cash}}",
+      "lastComplete": "最後の完全更新",
+      "excluded": "{{count}} 件の口座を読み取れなかったため、この合計から除外しています"
+    },
+    "allocation": {
+      "byAccount": "口座別の構成",
+      "byHolding": "銘柄別の構成",
+      "center": "保有比率",
+      "other": "その他の保有",
+      "cash": "現金",
+      "unpriced": "未評価 / その他",
+      "cashUnpriced": "現金 / 未評価"
+    },
+    "accounts": {
+      "title": "口座の状態",
+      "hint": "口座をクリックすると保有一覧を絞り込めます",
+      "clearFilter": "絞り込みを解除",
+      "positions": "{{count}} 件の保有",
+      "fresh": "読み取り成功",
+      "failed": "読み取れませんでした — 合計に含まれていません",
+      "lastSuccess": "最後に読み取れたのは {{time}}",
+      "noSuccess": "まだ一度も読み取れていません",
+      "reconnect": "再接続",
+      "retryRead": "再読み込み"
+    },
+    "holdings": {
+      "title": "保有明細",
+      "count": "{{count}} 件の保有",
+      "search": "証券会社・銘柄・市場で検索",
+      "colBroker": "口座",
+      "colSymbol": "銘柄",
+      "colType": "種別",
+      "colQuantity": "数量",
+      "colCostPrice": "取得単価 / 現在値",
+      "colValue": "評価額",
+      "colWeight": "構成比",
+      "colPnl": "評価損益",
+      "colData": "データ",
+      "priced": "評価済み",
+      "unpriced": "未評価"
+    },
+    "history": {
+      "title": "資産推移",
+      "hint": "完全なスナップショットのみを表示します。変動には入出金が含まれることがあります。",
+      "count": "{{count}} 件の完全なスナップショット",
+      "empty": "最初の完全更新のあとから記録が始まります"
+    },
+    "credentials": {
+      "title": "接続と認証情報",
+      "readOnlyProfile": "読み取り専用プロファイル",
+      "writableProfile": "書き込み可能プロファイル",
+      "renewalAutomatic": "コネクタが自動更新",
+      "renewalSession": "ローカルセッション依存",
+      "renewalProvider": "提供元が有効期限を管理"
+    },
+    "status": {
+      "title": "有効な口座を順番に読み取っています",
+      "reading": "読み取り中",
+      "done": "完了",
+      "failed": "失敗",
+      "waiting": "待機中"
+    },
+    "env": {
+      "live": "ライブ",
+      "paper": "ペーパー"
+    },
+    "compatibility": {
+      "native": "専用アダプター",
+      "contractTested": "契約テスト済み",
+      "experimental": "実験的"
+    },
+    "editor": {
+      "title": "ポートフォリオの口座を管理",
+      "subtitle": "ここに保存されるのは口座の選択と表示設定だけで、認証情報は保存されません。",
+      "close": "閉じる",
+      "currency": "主表示通貨",
+      "selected": "追加済みの口座",
+      "selectedHint": "上下の矢印で表示順を変更できます。",
+      "enableAccount": "口座を有効にする",
+      "accountLabel": "口座名",
+      "moveUp": "上へ",
+      "moveDown": "下へ",
+      "removeAccount": "口座を削除",
+      "includeCash": "この口座の現金を含める",
+      "noAccounts": "口座がまだ選択されていません",
+      "addTitle": "ローカルの読み取り専用接続を追加",
+      "addHint": "このコンピューターで作成済みの接続から選びます。",
+      "openConnections": "接続センターを開く",
+      "chooseConnection": "接続を選択…",
+      "noConnections": "追加できる接続がありません",
+      "add": "追加",
+      "footerHint": "保存すると有効な口座が更新されます。",
+      "cancel": "キャンセル",
+      "save": "保存して更新",
+      "saving": "保存中"
+    },
+    "connections": {
+      "title": "ローカル接続センター",
+      "subtitle": "接続定義はこの端末に残り、秘密情報は OS の資格情報ストアにのみ保存されます。",
+      "close": "接続センターを閉じる",
+      "createTitle": "口座接続を作成",
+      "createHint": "プロファイルは公開テンプレート、接続はこのコンピューター専用の実体です。",
+      "profile": "読み取り専用プロファイル",
+      "chooseProfile": "プロファイルを選択…",
+      "localId": "ローカル接続 ID",
+      "displayName": "表示名",
+      "displayNamePlaceholder": "メイン口座",
+      "create": "接続を作成",
+      "created": "ローカル接続を作成しました。",
+      "listTitle": "このコンピューターの接続",
+      "listCount": "{{count}} 件の接続",
+      "empty": "ローカル接続がまだありません",
+      "codexTitle": "Codex で証券会社を追加",
+      "codexBody": "Codex に connector init を実行させ、公式ドキュメントから読み取り用アダプターを実装し、validate を通してから install します。プラグインはリポジトリの外に置かれます。",
+      "readOnly": "読み取り専用",
+      "credentialSaved": "保存済み",
+      "optional": "（任意）",
+      "authType": "認証方式",
+      "dependency": "ローカル依存関係",
+      "oauthNote": "OAuth を使用します。必要に応じて再接続で認可してください。",
+      "localNote": "認証情報は既存のローカルコネクタ設定が管理します。",
+      "saveVault": "資格情報ストアに保存",
+      "savedVault": "認証情報を OS の資格情報ストアに保存しました。",
+      "test": "接続テスト",
+      "testOk": "{{label}} は正常です。",
+      "testFailed": "{{label}} のテストに失敗しました: {{error}}",
+      "unknownTestError": "コネクターが不明なエラーを返しました。",
+      "delete": "削除",
+      "configured": "必要な認証情報は設定済みです",
+      "accountTitle": "口座",
+      "accountCurrent": "末尾 ····{{last4}} の口座を読み取ります",
+      "accountNone": "口座が選択されていません。選択するまで、この接続は何も読み取りません。",
+      "accountLoad": "口座を選択",
+      "accountChange": "口座を変更",
+      "accountEmpty": "このログインで利用できる口座はありません。",
+      "accountPicker": "このログインで利用できる口座",
+      "accountChoose": "口座を選択",
+      "accountDefault": "・ブローカーの既定",
+      "accountDeactivated": "・無効化済み",
+      "accountSave": "この口座を使う",
+      "accountSaved": "口座を保存しました。"
+    }
   }
 }

@@ -343,14 +343,7 @@ function SdkBrokerRuntimeCard({ broker, t, onRefresh }: { broker: LiveBrokerStat
       </div>
 
       {state.kind === "not_configured" ? (
-        <section className="mt-4 rounded-xl border border-dashed border-border/60 bg-muted/40 p-4 shadow-sm">
-          <p className="text-sm text-muted-foreground">{t("runtime.missingLongbridgeVariables")}</p>
-          <ul className="mt-2 grid gap-1 font-mono text-sm">
-            <li>LONGBRIDGE_APP_KEY</li>
-            <li>LONGBRIDGE_APP_SECRET</li>
-            <li>LONGBRIDGE_ACCESS_TOKEN</li>
-          </ul>
-        </section>
+        <ConnectorMissingSetup broker={auth.broker} t={t} />
       ) : (
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <RuntimePanel title={t("runtime.connectionDetails")} icon={state.kind === "connected" ? Wifi : WifiOff}>
@@ -416,7 +409,45 @@ function formatSdkState(installed: boolean | null | undefined, t: TFunction): st
 
 function formatEnvironmentIdentity(identity: string | null | undefined, t: TFunction): string {
   if (identity === "config_declared" || identity === "config-declared") return t("runtime.configDeclared");
+  if (identity === "path_separated_key_bound") return t("runtime.pathSeparatedKeyBound");
   return identity || t("runtime.unknown");
+}
+
+const SDK_CONNECTOR_SETUP_HINTS = {
+  longbridge: {
+    introKey: "runtime.missingLongbridgeVariables",
+    variables: ["LONGBRIDGE_APP_KEY", "LONGBRIDGE_APP_SECRET", "LONGBRIDGE_ACCESS_TOKEN"],
+  },
+  etoro: {
+    introKey: "runtime.missingEtoroVariables",
+    variables: ["ETORO_API_KEY", "ETORO_USER_KEY"],
+    fileHintKey: "runtime.missingEtoroFileHint",
+  },
+} as const;
+
+function ConnectorMissingSetup({ broker, t }: { broker: string; t: TFunction }) {
+  const hints =
+    SDK_CONNECTOR_SETUP_HINTS[broker as keyof typeof SDK_CONNECTOR_SETUP_HINTS];
+  if (!hints) {
+    return (
+      <section className="mt-4 rounded-xl border border-dashed border-border/60 bg-muted/40 p-4 shadow-sm">
+        <p className="text-sm text-muted-foreground">{t("runtime.missingConnectorVariables")}</p>
+      </section>
+    );
+  }
+  return (
+    <section className="mt-4 rounded-xl border border-dashed border-border/60 bg-muted/40 p-4 shadow-sm">
+      <p className="text-sm text-muted-foreground">{t(hints.introKey)}</p>
+      <ul className="mt-2 grid gap-1 font-mono text-sm">
+        {hints.variables.map((variable) => (
+          <li key={variable}>{variable}</li>
+        ))}
+      </ul>
+      {"fileHintKey" in hints && hints.fileHintKey ? (
+        <p className="mt-2 text-sm text-muted-foreground">{t(hints.fileHintKey)}</p>
+      ) : null}
+    </section>
+  );
 }
 
 function isReadCapability(capability: string): boolean {

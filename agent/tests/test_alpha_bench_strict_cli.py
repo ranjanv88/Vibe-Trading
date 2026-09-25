@@ -44,6 +44,10 @@ def _strict_result():
                 "theme": ["momentum"],
                 "formula_latex": "x",
                 "_category": "confirmed_alive",
+                "alpha_t_full": 2.7697,
+                "alpha_t_train": 0.7931,
+                "alpha_t_test": 3.0179,
+                "random_ic_mean": 0.000333,
             }
         ],
         "skipped": [],
@@ -185,3 +189,60 @@ def test_strict_result_envelope_marks_counts(capsys, monkeypatch, _reg, _no_repo
     assert called["random_control"] is True
     assert called["oos_split"] is None
     assert called["n_random_seeds"] == 5
+
+
+# -- strict statistics must reach the output surfaces -----------------------
+# categorise_strict() gates on alpha_t_full / alpha_t_train / alpha_t_test and
+# the random-control baseline, but the CLI row projection dropped all four, so
+# a strict run printed a verdict with no way to check the numbers behind it.
+
+
+def test_strict_envelope_forwards_alpha_t_stats(capsys, monkeypatch, _reg, _no_report):
+    """The JSON envelope must expose the statistics the strict gate decides on."""
+    _, _, cap = _run(capsys, _ns(strict=True, oos_split="2023-01-01"), monkeypatch)
+    row = _envelope(cap.out)["top"][0]
+    assert row["alpha_t_full"] == pytest.approx(2.7697)
+    assert row["alpha_t_train"] == pytest.approx(0.7931)
+    assert row["alpha_t_test"] == pytest.approx(3.0179)
+    assert row["random_ic_mean"] == pytest.approx(0.000333)
+
+
+def test_legacy_envelope_gains_no_strict_fields(capsys, monkeypatch, _reg, _no_report):
+    """A non-strict run's rows are unchanged — the fields are additive only."""
+    import src.factors.bench_runner as legacy_mod
+
+    monkeypatch.setattr(legacy_mod, "run_bench", lambda *a, **k: _legacy_result())
+    cli_handlers.cmd_alpha_bench(_ns(strict=False))
+    row = _envelope(capsys.readouterr().out)["top"][0]
+    for key in ("alpha_t_full", "alpha_t_train", "alpha_t_test", "random_ic_mean"):
+        assert key not in row
+
+
+def _report_html(tmp_path):
+    reports = sorted(tmp_path.glob("alpha_bench_*.html"))
+    assert reports, "no HTML report was written"
+    return reports[-1].read_text(encoding="utf-8")
+
+
+def test_strict_report_renders_alpha_t_table(capsys, monkeypatch, tmp_path, _reg):
+    """The HTML report gains a strict section carrying the same numbers."""
+    import src.tools.alpha_bench_tool as tool
+
+    monkeypatch.setattr(tool, "_default_output_dir", lambda: tmp_path)
+    _run(capsys, _ns(strict=True, oos_split="2023-01-01"), monkeypatch)
+    html_out = _report_html(tmp_path)
+    assert "Strict gate" in html_out
+    assert "2.7697" in html_out
+    assert "3.0179" in html_out
+
+
+def test_legacy_report_has_no_strict_section(capsys, monkeypatch, tmp_path, _reg):
+    """Non-strict reports are untouched by the strict section."""
+    import src.factors.bench_runner as legacy_mod
+    import src.tools.alpha_bench_tool as tool
+
+    monkeypatch.setattr(tool, "_default_output_dir", lambda: tmp_path)
+    monkeypatch.setattr(legacy_mod, "run_bench", lambda *a, **k: _legacy_result())
+    cli_handlers.cmd_alpha_bench(_ns(strict=False))
+    capsys.readouterr()
+    assert "Strict gate" not in _report_html(tmp_path)

@@ -165,6 +165,9 @@ class RunShadowBacktestTool(BaseTool):
     description = (
         "Run a multi-market backtest (A股/港股/美股/crypto) on a Shadow Account "
         "profile and compute delta-PnL attribution vs the user's realized trades. "
+        "Markets are backtested per settlement currency (CNY / HKD / USD pools; "
+        "us + crypto share the USD pool); the headline PnL uses the profile's "
+        "source-market currency. "
         "Requires `extract_shadow_strategy` to have been run first."
     )
     parameters = {
@@ -277,11 +280,13 @@ class RenderShadowReportTool(BaseTool):
         except ValueError as exc:
             return _err(str(exc))
 
-        result = load_cached_result(profile.shadow_id)
+        today = date.today()
+        window_end = kwargs.get("window_end") or today.isoformat()
+        window_start = kwargs.get("window_start") or (today - timedelta(days=365)).isoformat()
+        result = load_cached_result(
+            profile, window_start=window_start, window_end=window_end,
+        )
         if result is None:
-            today = date.today()
-            window_end = kwargs.get("window_end") or today.isoformat()
-            window_start = kwargs.get("window_start") or (today - timedelta(days=365)).isoformat()
             try:
                 result = run_shadow_backtest(
                     profile,
@@ -299,7 +304,9 @@ class RenderShadowReportTool(BaseTool):
                         missed_signals_pnl=0.0, noise_trades_pnl=0.0, early_exit_pnl=0.0,
                         late_exit_pnl=0.0, overtrading_pnl=0.0, counterfactual_trades=(),
                     ),
-                    shadow_total_pnl=0.0, real_total_pnl=0.0, delta_pnl=0.0,
+                    shadow_total_pnl=None,
+                    real_total_pnl=0.0,
+                    delta_pnl=None,
                 )
 
         today_signals = (

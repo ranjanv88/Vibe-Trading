@@ -71,6 +71,9 @@ UPLOADS_DIR = get_uploads_dir()
 EXIT_SUCCESS = 0
 EXIT_RUN_FAILED = 1
 EXIT_USAGE_ERROR = 2
+
+# Rows printed by `vibe-trading portfolio show` before the combined-holdings table is cut.
+_PORTFOLIO_CLI_MAX_HOLDINGS = 25
 RICH_TAG_PATTERN = re.compile(r"\[/?[^\]]+\]")
 SWARM_RUN_USAGE = """--swarm-run PRESET '{"k":"v"}'"""
 SWARM_RUN_VARS_PREVIEW_CHARS = 80
@@ -351,6 +354,29 @@ def _read_metrics(path: Path) -> dict:
         return {}
 
 
+def _read_metric_values(path: Path) -> dict[str, float]:
+    """Read metrics.csv as raw floats, for callers that must do arithmetic.
+
+    ``_read_metrics`` above pre-formats every value into a display string, so a
+    caller that renders a ratio as a percentage cannot use it. An empty result
+    also serves as the "this turn produced no backtest" signal.
+    """
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8", newline="") as handle:
+            row = next(csv.DictReader(handle), None) or {}
+    except (OSError, csv.Error):
+        return {}
+    values: dict[str, float] = {}
+    for key, value in row.items():
+        try:
+            values[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
 def _status_style(status: str) -> str:
     """Return a consistent Rich color for status labels."""
     return {
@@ -409,13 +435,13 @@ def _provider_key_env(provider: str | None) -> str | None:
     """Return the credential environment variable for a provider."""
     return {
         "openrouter": "OPENROUTER_API_KEY",
-        "requesty": "REQUESTY_API_KEY",
         "openai": "OPENAI_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
         "nvidia": "NVIDIA_API_KEY",
         "nvidia-nim": "NVIDIA_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "groq": "GROQ_API_KEY",
+        "novita": "NOVITA_API_KEY",
         "dashscope": "DASHSCOPE_API_KEY",
         "qwen": "DASHSCOPE_API_KEY",
         "zhipu": "ZHIPU_API_KEY",
@@ -425,6 +451,7 @@ def _provider_key_env(provider: str | None) -> str | None:
         "spark": "SPARK_API_KEY",
         "iflytek": "SPARK_API_KEY",
         "zai": "ZAI_API_KEY",
+        "modelscope": "MODELSCOPE_API_KEY",
     }.get((provider or "").lower())
 
 
@@ -432,7 +459,6 @@ def _provider_base_env(provider: str | None) -> str | None:
     """Return the base URL environment variable for a provider."""
     return {
         "openrouter": "OPENROUTER_BASE_URL",
-        "requesty": "REQUESTY_BASE_URL",
         "openai": "OPENAI_BASE_URL",
         "openai-codex": "OPENAI_CODEX_BASE_URL",
         "deepseek": "DEEPSEEK_BASE_URL",
@@ -440,6 +466,7 @@ def _provider_base_env(provider: str | None) -> str | None:
         "nvidia-nim": "NVIDIA_BASE_URL",
         "gemini": "GEMINI_BASE_URL",
         "groq": "GROQ_BASE_URL",
+        "novita": "NOVITA_BASE_URL",
         "dashscope": "DASHSCOPE_BASE_URL",
         "qwen": "DASHSCOPE_BASE_URL",
         "zhipu": "ZHIPU_BASE_URL",
@@ -449,6 +476,7 @@ def _provider_base_env(provider: str | None) -> str | None:
         "spark": "SPARK_BASE_URL",
         "iflytek": "SPARK_BASE_URL",
         "zai": "ZAI_BASE_URL",
+        "modelscope": "MODELSCOPE_BASE_URL",
         "ollama": "OLLAMA_BASE_URL",
     }.get((provider or "").lower())
 
@@ -930,6 +958,10 @@ def _format_tool_result_preview(tool: str, status: str, preview: str) -> str:
 
 _PROPOSAL_TOOL_NAME = "propose_mandate_profiles"
 _PROPOSAL_ID_RE = re.compile(r'"proposal_id"\s*:\s*"(mp_[0-9a-f]{32})"')
+_SCHEDULED_PROPOSAL_TOOL_NAME = "scheduled_research"
+_SCHEDULED_PROPOSAL_ID_RE = re.compile(
+    r'"proposal_id"\s*:\s*"(srp_[0-9a-f]{32})"'
+)
 
 
 def _load_full_proposal(proposal_id: str) -> Optional[Dict[str, Any]]:
@@ -986,6 +1018,21 @@ def _mandate_proposal_from_tool_result(data: Dict[str, Any]) -> Optional[Dict[st
     if not match:
         return None
     return _load_full_proposal(match.group(1))
+
+
+def _scheduled_proposal_from_tool_result(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Recover the full scheduled-research proposal from a tool preview."""
+    if data.get("tool") != _SCHEDULED_PROPOSAL_TOOL_NAME or data.get("status") != "ok":
+        return None
+    match = _SCHEDULED_PROPOSAL_ID_RE.search(str(data.get("preview") or ""))
+    if not match:
+        return None
+    try:
+        from src.scheduled_research.proposals import load_proposal
+
+        return load_proposal(match.group(1))
+    except Exception:  # noqa: BLE001 - relay must never break the turn
+        return None
 
 
 def _ensure_session_id(title: str, *, session_id: Optional[str] = None) -> str:
@@ -1086,6 +1133,8 @@ def _run_agent(
         # the tool_result still flows on to the dashboard / no-rich printers.
         if event_type == "tool_result" and proposal_sink is not None:
             proposal = _mandate_proposal_from_tool_result(data)
+            if proposal is None:
+                proposal = _scheduled_proposal_from_tool_result(data)
             if proposal is not None:
                 try:
                     proposal_sink(proposal)
@@ -1501,6 +1550,19 @@ def cmd_run(prompt: str, max_iter: int, *, json_mode: bool = False, no_rich: boo
         _print_json_result(result)
         return _result_exit_code(result)
     _print_result(result, time.perf_counter() - start, no_rich=no_rich)
+    if result.get("run_id") and result.get("run_dir"):
+        # Point at the dashboard without starting anything. Spawning a server
+        # from a result-printing path would leave an unsupervised process behind
+        # after the command exits.
+        if _read_metric_values(Path(result["run_dir"]) / "artifacts" / "metrics.csv"):
+            hint = (
+                f"Dashboard: run `vibe-trading serve`, then open "
+                f"/runs/{result['run_id']}?view=dashboard"
+            )
+            if no_rich:
+                print(hint)
+            else:
+                console.print(f"[dim]{hint}[/dim]")
     if result.get("run_id"):
         tip = f"--show {result['run_id']}  |  --continue {result['run_id']} \"...\"  |  --code {result['run_id']}  |  --pine {result['run_id']}"
         if no_rich:
@@ -1799,6 +1861,7 @@ def _print_help() -> None:
         ("/swarm list", "List team run history"),
         ("/swarm show <run_id>", "Show a team run"),
         ("/swarm cancel <run_id>", "Cancel a team run"),
+        ("/swarm retry <run_id> [--resume]", "Retry a team run or resume a failed one"),
         ("/sessions", "List chat sessions"),
         ("/settings", "Show provider, model, timeout, and credentials"),
         ("/stop", "How to gracefully cancel a running agent"),
@@ -1965,6 +2028,14 @@ def _handle_swarm_command(arg: str) -> None:
             cmd_swarm_cancel(sub_arg)
         else:
             console.print("[red]Usage: /swarm cancel <run_id>[/red]")
+    elif sub == "retry":
+        retry_parts = sub_arg.split()
+        if len(retry_parts) == 1:
+            cmd_swarm_retry_live(retry_parts[0])
+        elif len(retry_parts) == 2 and retry_parts[1] == "--resume":
+            cmd_swarm_retry_live(retry_parts[0], resume=True)
+        else:
+            console.print("[red]Usage: /swarm retry <run_id> [--resume][/red]")
     else:
         console.print(f"[red]Unknown swarm command: {sub}[/red]")
 
@@ -2115,11 +2186,19 @@ class _SwarmDashboard:
             summary = data.get("summary", "")
             if summary:
                 self.completed_summaries.append((agent["name"], summary))
+        elif etype == "task_resumed":
+            agent["status"] = "resumed"
+            agent["tool"] = "kept"
         elif etype == "task_failed":
             agent["status"] = "failed"
             agent["elapsed"] = (time.monotonic() - agent["started_at"]) if agent["started_at"] else 0
             error = data.get("error", "")[:80]
             self.completed_summaries.append((agent["name"], f"[red]FAILED: {error}[/red]"))
+        elif etype == "task_cancelled":
+            agent["status"] = "cancelled"
+            agent["elapsed"] = (time.monotonic() - agent["started_at"]) if agent["started_at"] else 0
+            agent["iters"] = data.get("iterations", agent["iters"])
+            self.completed_summaries.append((agent["name"], "[yellow]CANCELLED[/yellow]"))
         elif etype == "task_blocked":
             agent["status"] = "blocked"
             blocked_by = ", ".join(data.get("blocked_by", []))
@@ -2178,12 +2257,18 @@ class _SwarmDashboard:
             elif status == "done":
                 status_str = "[green][\u2713 done  ][/green]"
                 elapsed = agent["elapsed"]
+            elif status == "resumed":
+                status_str = "[green][\u2713 kept  ][/green]"
+                elapsed = agent["elapsed"]
             elif status == "failed":
                 status_str = "[red][\u2717 failed][/red]"
                 elapsed = agent["elapsed"]
             elif status == "retry":
                 status_str = "[yellow][\u21bb retry ][/yellow]"
                 elapsed = time.monotonic() - agent["started_at"] if agent["started_at"] else 0
+            elif status == "cancelled":
+                status_str = "[yellow][\u2298 cancel][/yellow]"
+                elapsed = agent["elapsed"]
             else:
                 status_str = "[dim][\u25cb waiting][/dim]"
                 elapsed = 0
@@ -2195,7 +2280,7 @@ class _SwarmDashboard:
             table.add_row(styled_name, status_str, agent["tool"], time_str, iter_str, last_text)
 
         # Progress bar row
-        done_count = sum(1 for a in self.agents.values() if a["status"] in ("done", "failed"))
+        done_count = sum(1 for a in self.agents.values() if a["status"] in ("done", "resumed", "failed", "cancelled"))
         total_count = len(self.agents) or 1
         pct = int(done_count / total_count * 100)
         bar_width = 40
@@ -2221,13 +2306,72 @@ class _SwarmDashboard:
         return table
 
 
+def _watch_swarm_run(store, runtime, run, dashboard: _SwarmDashboard) -> Optional[int]:
+    """Keep the CLI alive while a swarm run streams to its dashboard."""
+    from rich.live import Live
+    from src.swarm.models import RunStatus
+
+    dashboard.run_id = run.id
+
+    with Live(dashboard.build_table(), console=console, refresh_per_second=4, transient=False) as live:
+        try:
+            while True:
+                time.sleep(0.25)
+                live.update(dashboard.build_table())
+                current = store.load_run(run.id)
+                if current is None:
+                    console.print("[red]Run record lost[/red]")
+                    return
+                if current.status in (RunStatus.completed, RunStatus.failed, RunStatus.cancelled):
+                    dashboard.finished = True
+                    dashboard.final_status = current.status.value
+                    live.update(dashboard.build_table())
+                    break
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelling...[/yellow]")
+            runtime.cancel_run(run.id)
+            time.sleep(1)
+            current = store.load_run(run.id)
+
+    if current is None:
+        return
+
+    for agent_name, summary in dashboard.completed_summaries:
+        style = _get_agent_style(agent_name)
+        console.print(f"\n[{style}]\u2500\u2500 {agent_name} \u2500\u2500[/{style}]")
+        lines = summary.strip().split("\n")
+        preview = "\n".join(lines[:8])
+        if len(lines) > 8:
+            preview += "\n[dim]...[/dim]"
+        console.print(preview)
+
+    status_color = {
+        RunStatus.completed: "green",
+        RunStatus.failed: "red",
+        RunStatus.cancelled: "yellow",
+    }.get(current.status, "dim")
+
+    elapsed_total = time.monotonic() - dashboard.start_time
+    mins, secs = divmod(int(elapsed_total), 60)
+
+    tokens_in = current.total_input_tokens
+    tokens_out = current.total_output_tokens
+    token_str = ""
+    if tokens_in or tokens_out:
+        token_str = f"\nTokens: ~{tokens_in + tokens_out:,} (in: {tokens_in:,} out: {tokens_out:,})"
+
+    if current.final_report:
+        console.print("\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
+        console.print(current.final_report[:2000])
+
+    console.print(f"\n[{status_color}]{current.status.value.upper()}[/{status_color}]  Time: {mins}m {secs}s{token_str}")
+
+
 def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> Optional[int]:
     """Run a swarm preset with Rich Live dashboard."""
-    from rich.live import Live
     from src.config import load_swarm_agent_config
     from src.swarm.runtime import SwarmRuntime
     from src.swarm.store import SwarmStore
-    from src.swarm.models import RunStatus
 
     user_vars: Dict[str, str] = {}
     if vars_json:
@@ -2262,63 +2406,60 @@ def cmd_swarm_run_live(preset: str, vars_json: Optional[str] = None) -> Optional
         console.print(f"[red]DAG validation failed: {exc}[/red]")
         return
 
-    dashboard.run_id = run.id
+    return _watch_swarm_run(store, runtime, run, dashboard)
 
-    with Live(dashboard.build_table(), console=console, refresh_per_second=4, transient=False) as live:
-        try:
-            while True:
-                time.sleep(0.25)
-                live.update(dashboard.build_table())
-                current = store.load_run(run.id)
-                if current is None:
-                    console.print("[red]Run record lost[/red]")
-                    return
-                if current.status in (RunStatus.completed, RunStatus.failed, RunStatus.cancelled):
-                    dashboard.finished = True
-                    dashboard.final_status = current.status.value
-                    live.update(dashboard.build_table())
-                    break
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Cancelling...[/yellow]")
-            runtime.cancel_run(run.id)
-            time.sleep(1)
-            current = store.load_run(run.id)
 
-    if current is None:
-        return
+def cmd_swarm_retry_live(run_id: str, resume: bool = False) -> Optional[int]:
+    """Retry a prior swarm run, optionally keeping completed tasks."""
+    from src.config import load_swarm_agent_config
+    from src.swarm.models import RunStatus
+    from src.swarm.runtime import SwarmRuntime
+    from src.swarm.store import SwarmStore
 
-    # Print completed agent summaries
-    for agent_name, summary in dashboard.completed_summaries:
-        style = _get_agent_style(agent_name)
-        console.print(f"\n[{style}]\u2500\u2500 {agent_name} \u2500\u2500[/{style}]")
-        # Truncate to first meaningful chunk
-        lines = summary.strip().split("\n")
-        preview = "\n".join(lines[:8])
-        if len(lines) > 8:
-            preview += "\n[dim]...[/dim]"
-        console.print(preview)
+    store = SwarmStore(base_dir=SWARM_DIR)
+    try:
+        loaded = store.load_run(run_id)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    if loaded is None:
+        console.print(f"[red]Run {run_id} not found[/red]")
+        return EXIT_USAGE_ERROR
 
-    # Final report
-    status_color = {
-        RunStatus.completed: "green",
-        RunStatus.failed: "red",
-        RunStatus.cancelled: "yellow",
-    }.get(current.status, "dim")
+    reconciled = store.reconcile_run(loaded, write=True)
+    if reconciled.status == RunStatus.running:
+        console.print("[red]Cannot retry a running run. Cancel or reap it first.[/red]")
+        return EXIT_USAGE_ERROR
+    if resume and reconciled.status not in (RunStatus.failed, RunStatus.cancelled):
+        console.print(
+            f"[red]Cannot resume a run in status '{reconciled.status.value}'; "
+            "resume only applies to failed or cancelled runs.[/red]"
+        )
+        return EXIT_USAGE_ERROR
 
-    elapsed_total = time.monotonic() - dashboard.start_time
-    mins, secs = divmod(int(elapsed_total), 60)
+    runtime = SwarmRuntime(store=store, agent_config=load_swarm_agent_config())
+    _agent_color_map.clear()
+    action = "Resuming swarm" if resume else "Retrying swarm"
+    console.print(f"\n[dim]{action}:[/dim] [cyan]{reconciled.preset_name}[/cyan]")
+    console.print(f"[dim]Source run:[/dim] {run_id}")
 
-    tokens_in = current.total_input_tokens
-    tokens_out = current.total_output_tokens
-    token_str = ""
-    if tokens_in or tokens_out:
-        token_str = f"\nTokens: ~{tokens_in + tokens_out:,} (in: {tokens_in:,} out: {tokens_out:,})"
+    dashboard = _SwarmDashboard(reconciled.preset_name, "")
+    try:
+        run = runtime.start_run(
+            reconciled.preset_name,
+            reconciled.user_vars or {},
+            live_callback=dashboard.handle_event,
+            include_shell_tools=True,
+            resume_from=reconciled if resume else None,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    except ValueError as exc:
+        console.print(f"[red]DAG validation failed: {exc}[/red]")
+        return EXIT_USAGE_ERROR
 
-    if current.final_report:
-        console.print("\n[bold]\u2500\u2500 Final Report \u2500\u2500[/bold]")
-        console.print(current.final_report[:2000])
-
-    console.print(f"\n[{status_color}]{current.status.value.upper()}[/{status_color}]  Time: {mins}m {secs}s{token_str}")
+    return _watch_swarm_run(store, runtime, run, dashboard)
 
 
 # ---------------------------------------------------------------------------
@@ -2865,8 +3006,12 @@ def cmd_upload(file_path: str) -> None:
 def cmd_provider_login(provider: str) -> int:
     """Authenticate OAuth-backed LLM providers."""
     normalized = provider.strip().lower().replace("_", "-")
+    if normalized in {"copilot", "github-copilot"}:
+        return _login_copilot()
     if normalized != "openai-codex":
-        console.print("[red]Unknown OAuth provider.[/red] Supported: openai-codex")
+        console.print(
+            "[red]Unknown OAuth provider.[/red] Supported: openai-codex, copilot"
+        )
         return EXIT_USAGE_ERROR
     try:
         from src.providers.openai_codex import login_openai_codex
@@ -2879,9 +3024,43 @@ def cmd_provider_login(provider: str) -> int:
         account = getattr(token, "account_id", None) or "ChatGPT"
         console.print(f"[green]Authenticated with OpenAI Codex[/green]  [dim]{account}[/dim]")
         return EXIT_SUCCESS
+    except EOFError:
+        # ``docker exec`` does not allocate stdin/TTY unless explicitly asked
+        # to do so. oauth-cli-kit prompts for the browser callback URL after
+        # printing the authorization link, so an unattended stdin otherwise
+        # fails with the opaque ``EOF when reading a line`` error.
+        console.print(
+            "[red]Authentication error:[/red] OpenAI Codex OAuth needs an "
+            "interactive terminal to paste the callback URL."
+        )
+        console.print(
+            "[yellow]Docker:[/yellow] run `docker compose exec vibe-trading "
+            "vibe-trading provider login openai-codex` or add `-it` to "
+            "`docker exec`."
+        )
+        return EXIT_RUN_FAILED
     except Exception as exc:
         console.print(f"[red]Authentication error:[/red] {exc}")
         return EXIT_RUN_FAILED
+
+
+def _login_copilot() -> int:
+    """Report supported GitHub Copilot SDK authentication options."""
+    from src.providers.copilot_auth import get_copilot_auth_status
+
+    authenticated, status = get_copilot_auth_status()
+    if authenticated:
+        console.print(
+            f"[green]Already authenticated with GitHub Copilot[/green]  [dim]{status}[/dim]"
+        )
+        return EXIT_SUCCESS
+
+    console.print(
+        "[yellow]No GitHub credential found.[/yellow]\n"
+        "Run [bold]copilot[/bold] and sign in, run [bold]gh auth login[/bold], "
+        "or set [bold]COPILOT_GITHUB_TOKEN[/bold]."
+    )
+    return EXIT_RUN_FAILED
 
 
 # ---------------------------------------------------------------------------
@@ -3887,6 +4066,245 @@ def cmd_connector_list() -> int:
     return EXIT_SUCCESS
 
 
+def cmd_connector_init(connector_id: str, destination: str = ".") -> int:
+    """Create a local-only read connector template.
+
+    Args:
+        connector_id: Lowercase connector id used for the template directory.
+        destination: Parent directory the template is created in.
+
+    Returns:
+        The process exit code.
+    """
+    from src.trading.plugin_scaffold import scaffold_connector
+
+    try:
+        path = scaffold_connector(connector_id, Path(destination))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    console.print(f"[green]Created local connector template[/green] {path}")
+    console.print(
+        "[dim]Implement adapter.py from the broker's official read-only API docs, "
+        "then run connector validate and connector install.[/dim]"
+    )
+    return EXIT_SUCCESS
+
+
+def cmd_connector_validate(directory: str) -> int:
+    """Validate a local read-only connector manifest.
+
+    Args:
+        directory: Directory holding the connector manifest.
+
+    Returns:
+        The process exit code.
+    """
+    from src.trading.plugin_scaffold import validate_connector
+
+    try:
+        plugin = validate_connector(Path(directory))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    console.print(f"[green]Valid read-only connector[/green] {plugin.profile.id}")
+    return EXIT_SUCCESS
+
+
+def cmd_connector_install(directory: str) -> int:
+    """Install a validated connector into the user's private connector directory.
+
+    Args:
+        directory: Directory holding the validated connector.
+
+    Returns:
+        The process exit code.
+    """
+    from src.trading.plugin_scaffold import install_connector
+
+    try:
+        path = install_connector(Path(directory))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return EXIT_USAGE_ERROR
+    console.print(f"[green]Installed local connector[/green] {path}")
+    return EXIT_SUCCESS
+
+
+def _portfolio_service(service: Any | None = None) -> Any:
+    """Return the injected portfolio service, or build the default one.
+
+    Args:
+        service: Optional pre-built service (tests inject a stub).
+
+    Returns:
+        A ``PortfolioService`` instance.
+    """
+    if service is not None:
+        return service
+    from src.portfolio.service import PortfolioService
+
+    return PortfolioService()
+
+
+def _print_portfolio_snapshot(snapshot: dict[str, Any]) -> None:
+    """Render one portfolio snapshot: totals, per-source accounts, holdings, warnings.
+
+    Args:
+        snapshot: A snapshot envelope as produced by ``PortfolioService``.
+    """
+    totals = snapshot.get("totals") or {}
+    usd = float(totals.get("usd") or 0.0)
+    cny = float(totals.get("cny") or 0.0)
+    state = "[green]complete[/green]" if snapshot.get("complete") else "[yellow]INCOMPLETE[/yellow]"
+    console.print(
+        f"Snapshot [cyan]{rich_escape(str(snapshot.get('created_at') or '?'))}[/cyan] · {state} · "
+        f"total [bold]{usd:,.2f} USD[/bold] / {cny:,.0f} CNY"
+    )
+
+    accounts = Table(title="Sources", box=box.SIMPLE_HEAVY, show_lines=False)
+    accounts.add_column("Source")
+    accounts.add_column("Connector")
+    accounts.add_column("Status", justify="center")
+    accounts.add_column("Total USD", justify="right")
+    accounts.add_column("Last success")
+    for row in snapshot.get("accounts") or []:
+        ok = row.get("status") == "ok"
+        total = row.get("total_usd")
+        accounts.add_row(
+            rich_escape(str(row.get("label") or row.get("source_id") or "?")),
+            rich_escape(str(row.get("broker") or "")),
+            "[green]ok[/green]" if ok else f"[red]{rich_escape(str(row.get('status')))}[/red]",
+            f"{float(total):,.2f}" if total is not None else "[dim]excluded[/dim]",
+            rich_escape(str(row.get("last_success_at") or "never")),
+        )
+    console.print(accounts)
+
+    holdings = Table(title="Holdings (combined across sources)", box=box.SIMPLE_HEAVY, show_lines=False)
+    holdings.add_column("Symbol")
+    holdings.add_column("Type")
+    holdings.add_column("Value USD", justify="right")
+    holdings.add_column("Weight", justify="right")
+    holdings.add_column("Unrealized P/L USD", justify="right")
+    holdings.add_column("Sources")
+    for row in (snapshot.get("combined_holdings") or [])[:_PORTFOLIO_CLI_MAX_HOLDINGS]:
+        value = float(row.get("market_value_usd") or 0.0)
+        pnl = row.get("unrealized_pnl_usd")
+        holdings.add_row(
+            rich_escape(str(row.get("symbol") or "?")),
+            rich_escape(str(row.get("asset_type") or "")),
+            f"{value:,.2f}",
+            f"{(value / usd * 100):.1f}%" if usd > 0 else "—",
+            f"{float(pnl):,.2f}" if pnl is not None else "—",
+            rich_escape(", ".join(str(item) for item in (row.get("sources") or row.get("brokers") or []))),
+        )
+    console.print(holdings)
+    for warning in snapshot.get("warnings") or []:
+        console.print(f"[yellow]![/yellow] {rich_escape(str(warning))}")
+
+
+def cmd_portfolio_show(service: Any | None = None) -> int:
+    """Print the latest stored portfolio snapshot.
+
+    Args:
+        service: Optional ``PortfolioService`` (tests inject a stub).
+
+    Returns:
+        The process exit code.
+    """
+    snapshot = _portfolio_service(service).latest()
+    if snapshot is None:
+        console.print(
+            "[dim]No portfolio snapshot yet. Select sources on the Web UI Portfolio page "
+            "(or `vibe-trading portfolio sources`), then run `vibe-trading portfolio refresh`.[/dim]"
+        )
+        return EXIT_SUCCESS
+    _print_portfolio_snapshot(snapshot)
+    return EXIT_SUCCESS
+
+
+def cmd_portfolio_refresh(service: Any | None = None) -> int:
+    """Read every enabled source now, store a new snapshot, and print it.
+
+    A source that fails is reported and excluded from the totals; the command
+    then exits non-zero so scripts notice the portfolio is incomplete.
+
+    Args:
+        service: Optional ``PortfolioService`` (tests inject a stub).
+
+    Returns:
+        ``EXIT_SUCCESS`` for a complete snapshot, ``EXIT_RUN_FAILED`` otherwise.
+    """
+    try:
+        snapshot = _portfolio_service(service).refresh()
+    except RuntimeError as exc:
+        console.print(f"[red]{rich_escape(str(exc))}[/red]")
+        return EXIT_RUN_FAILED
+    _print_portfolio_snapshot(snapshot)
+    return EXIT_SUCCESS if snapshot.get("complete") else EXIT_RUN_FAILED
+
+
+def cmd_portfolio_sources(service: Any | None = None) -> int:
+    """List the local read-only connections and whether the portfolio uses them.
+
+    Args:
+        service: Optional ``PortfolioService`` (tests inject a stub).
+
+    Returns:
+        The process exit code.
+    """
+    rows = _portfolio_service(service).sources()
+    table = Table(title="Portfolio sources", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Selected", justify="center", width=8)
+    table.add_column("Connection")
+    table.add_column("Connector")
+    table.add_column("Env")
+    table.add_column("Transport")
+    table.add_column("Credentials", justify="center")
+    for row in rows:
+        connection_cell = (
+            f"[cyan]{rich_escape(str(row.get('connection_id') or row.get('id')))}[/cyan]"
+            f"\n[dim]{rich_escape(str(row.get('label') or ''))}[/dim]"
+        )
+        account_ref = str(row.get("account_ref") or "")
+        if account_ref:
+            connection_cell += f"\n[dim]account ····{rich_escape(account_ref[-4:])}[/dim]"
+        elif row.get("account_selection_required"):
+            connection_cell += "\n[yellow]no account selected[/yellow]"
+        table.add_row(
+            "[green]*[/green]" if row.get("selected") else "",
+            connection_cell,
+            rich_escape(str(row.get("connector") or "")),
+            rich_escape(str(row.get("environment") or "")),
+            rich_escape(str(row.get("transport") or "")),
+            "[green]ok[/green]" if row.get("credentials_configured") else "[dim]-[/dim]",
+        )
+    console.print(table)
+    if not rows:
+        console.print("[dim]No local connections yet. Create one on the Web UI Portfolio page (Manage accounts → Connection center).[/dim]")
+    return EXIT_SUCCESS
+
+
+def _dispatch_portfolio(args: argparse.Namespace) -> int:
+    """Route ``vibe-trading portfolio <subcommand>``; bare ``portfolio`` shows.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        The process exit code.
+    """
+    sub = getattr(args, "portfolio_command", None) or "show"
+    if sub == "show":
+        return cmd_portfolio_show()
+    if sub == "refresh":
+        return cmd_portfolio_refresh()
+    if sub == "sources":
+        return cmd_portfolio_sources()
+    console.print(f"[red]Unknown portfolio subcommand: {sub}[/red]")
+    return EXIT_USAGE_ERROR
+
+
 def cmd_connector_use(profile_id: str) -> int:
     """Select the default trading connector profile."""
     from src.trading.profiles import profile_by_id, save_selected_profile_id
@@ -3954,6 +4372,7 @@ def cmd_connector_configure(
 def cmd_connector_check(
     profile_id: Optional[str] = None,
     *,
+    connection_id: str | None = None,
     host: str | None = None,
     port: int | None = None,
     client_id: int | None = None,
@@ -3964,7 +4383,15 @@ def cmd_connector_check(
 
     try:
         profile = _selected_profile_or(profile_id)
-        report = check_connection(profile.id, host=host, port=port, client_id=client_id, account=account)
+        options = {
+            "host": host,
+            "port": port,
+            "client_id": client_id,
+            "account": account,
+        }
+        if connection_id is not None:
+            options["connection_id"] = connection_id
+        report = check_connection(profile.id, **options)
     except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Connector check failed:[/red] {exc}")
         return EXIT_RUN_FAILED
@@ -4001,15 +4428,187 @@ def cmd_connector_check(
         table.add_row("Connector", profile.connector)
         table.add_row("Environment", profile.environment)
         table.add_row("Transport", profile.transport)
-        table.add_row("Configured", "yes" if report.get("configured") else "[red]no[/red]")
-        table.add_row("OAuth token", "present" if report.get("oauth_token_present") else "[yellow]missing[/yellow]")
-        table.add_row("Capabilities", ", ".join(report.get("capabilities", [])))
+        if profile.transport == "broker_sdk":
+            if "configured" in report:
+                table.add_row("Configured", "yes" if report.get("configured") else "[red]no[/red]")
+            if report.get("connection_state"):
+                table.add_row("Connection", str(report["connection_state"]))
+            sdk = report.get("sdk")
+            if isinstance(sdk, dict) and "installed" in sdk:
+                package = str(sdk.get("package") or "SDK")
+                state = "installed" if sdk.get("installed") else "[yellow]missing[/yellow]"
+                table.add_row(package, state)
+            if "tap" in report:
+                table.add_row("TAP", "enabled" if report.get("tap") else "disabled")
+            capabilities = report.get("capabilities")
+            if capabilities:
+                table.add_row("Capabilities", ", ".join(capabilities))
+        else:
+            table.add_row("Configured", "yes" if report.get("configured") else "[red]no[/red]")
+            table.add_row("OAuth token", "present" if report.get("oauth_token_present") else "[yellow]missing[/yellow]")
+            table.add_row("Capabilities", ", ".join(report.get("capabilities", [])))
         console.print(table)
 
     if report.get("status") not in {"ok"}:
         console.print(f"[red]{rich_escape(str(report.get('error') or report.get('status') or 'not ready'))}[/red]")
         return EXIT_RUN_FAILED
     console.print("[green]Connector profile is ready.[/green]")
+    return EXIT_SUCCESS
+
+
+def cmd_connector_setup(
+    profile_id: str,
+    *,
+    connection_id: str | None = None,
+    label: str | None = None,
+    skip_check: bool = False,
+    account: str | None = None,
+) -> int:
+    """Create a local read-only connection and collect secrets outside AI prompts.
+
+    Args:
+        profile_id: Read-only portfolio profile to connect through.
+        connection_id: Local id; defaults to ``<connector>-<environment>``.
+        label: Display name; defaults to the profile label.
+        skip_check: Skip the connectivity check (and, for an account-scoped
+            profile, the account selection that needs the broker).
+        account: Account to scope an account-scoped connection to; without it
+            the user picks from the broker's account list.
+
+    Returns:
+        The process exit code.
+    """
+    from src.trading.connections import (
+        ConnectionStore,
+        credential_field_catalog,
+        is_portfolio_connection_profile,
+        requires_account_selection,
+    )
+    from src.trading.profiles import profile_by_id
+    from src.trading.service import check_connection
+
+    try:
+        profile = profile_by_id(profile_id)
+        if not is_portfolio_connection_profile(profile):
+            raise ValueError(f"{profile.id} is not a read-only portfolio profile")
+        local_id = str(connection_id or f"{profile.connector}-{profile.environment}").strip().lower()
+        store = ConnectionStore()
+        connection = store.ensure(local_id, profile.id, label or profile.label)
+        fields = credential_field_catalog(profile.id)
+        names = [str(field["name"]) for field in fields]
+        status = store.credentials.status(connection.id, names) if names else {}
+        values: dict[str, str] = {}
+        for field in fields:
+            name = str(field["name"])
+            required = bool(field.get("required", True))
+            while True:
+                saved = bool(status.get(name))
+                suffix = " [already saved; Enter keeps it]" if saved else ""
+                value = Prompt.ask(
+                    f"{field.get('label') or name}{suffix}",
+                    password=bool(field.get("secret", True)),
+                    default="",
+                    show_default=False,
+                )
+                if value:
+                    values[name] = value
+                    break
+                if saved or not required:
+                    break
+                console.print(f"[yellow]{field.get('label') or name} is required.[/yellow]")
+        if values:
+            store.credentials.save(connection.id, values)
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]Connector setup failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_USAGE_ERROR
+
+    console.print(
+        f"[green]Local read-only connection ready[/green] "
+        f"{connection.id} [dim]({connection.profile_id})[/dim]"
+    )
+    needs_account = requires_account_selection(profile)
+    if skip_check:
+        if needs_account and not connection.account_ref:
+            console.print(
+                f"[yellow]Select the account this connection reads:[/yellow] "
+                f"vibe-trading connector select-account {connection.id}"
+            )
+        return EXIT_SUCCESS
+    try:
+        report = check_connection(profile.id, connection_id=connection.id)
+    except Exception as exc:  # noqa: BLE001 - return an actionable diagnostic
+        console.print(f"[red]Connection test failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    if report.get("status") != "ok":
+        console.print(
+            f"[red]Connection test failed:[/red] "
+            f"{rich_escape(str(report.get('error') or report.get('status')))}"
+        )
+        return EXIT_RUN_FAILED
+    console.print("[green]Connection test passed.[/green]")
+    if needs_account and (account is not None or not connection.account_ref):
+        return cmd_connector_select_account(connection.id, account=account)
+    return EXIT_SUCCESS
+
+
+def cmd_connector_select_account(
+    connection_id: str,
+    *,
+    account: str | None = None,
+    clear: bool = False,
+) -> int:
+    """Scope an account-scoped connection to one account from the broker's list.
+
+    There is no default: without ``account`` the user picks from the list, and
+    an account the broker does not list is refused.
+
+    Args:
+        connection_id: Connection to update.
+        account: Account reference to select; prompts when omitted.
+        clear: Remove the selection instead.
+
+    Returns:
+        The process exit code.
+    """
+    from src.trading.accounts import AccountListUnavailable, choose_account, connection_accounts
+    from src.trading.connections import ConnectionStore
+
+    store = ConnectionStore()
+    try:
+        connection = store.get(connection_id)
+        if clear:
+            store.select_account(connection.id, "")
+            console.print(f"[green]Cleared the account selection of[/green] {connection.id}")
+            return EXIT_SUCCESS
+        choices = connection_accounts(connection)
+        if account is None:
+            usable = [row for row in choices if not row.get("deactivated")]
+            if not usable:
+                raise ValueError("this login reaches no active account")
+            table = Table(title="Accounts", box=box.SIMPLE_HEAVY)
+            table.add_column("#", justify="right")
+            table.add_column("Account")
+            table.add_column("Broker default", justify="center")
+            table.add_column("Agentic trading", justify="center")
+            for index, row in enumerate(usable, start=1):
+                table.add_row(
+                    str(index),
+                    rich_escape(str(row.get("label") or "")),
+                    "yes" if row.get("is_default") else "",
+                    "allowed" if row.get("agentic_allowed") else "[dim]not allowed[/dim]",
+                )
+            console.print(table)
+            pick = Prompt.ask("Account", choices=[str(index) for index in range(1, len(usable) + 1)])
+            account = str(usable[int(pick) - 1]["account_ref"])
+        chosen = choose_account(choices, account.strip())
+        store.select_account(connection.id, str(chosen["account_ref"]))
+    except AccountListUnavailable as exc:
+        console.print(f"[red]Could not read the account list:[/red] {rich_escape(str(exc))}")
+        return EXIT_RUN_FAILED
+    except (RuntimeError, ValueError) as exc:
+        console.print(f"[red]Account selection failed:[/red] {rich_escape(str(exc))}")
+        return EXIT_USAGE_ERROR
+    console.print(f"[green]{connection.id} now reads[/green] {rich_escape(str(chosen.get('label') or ''))}")
     return EXIT_SUCCESS
 
 
@@ -4029,8 +4628,32 @@ def _first_present(row: dict[str, Any], *keys: str) -> Any:
 
 
 def _print_connector_balances(result: dict[str, Any]) -> int:
-    """Render the multi-currency balances table returned by ``broker_sdk`` connectors."""
+    """Render the ``balances`` list returned by ``broker_sdk`` connectors.
+
+    Two row shapes arrive here. Longbridge reports one row per currency with
+    net assets, cash, buying power and margins. ccxt (Binance spot) reports one
+    row per asset with ``free`` / ``used`` / ``total``, where ``used`` is locked
+    in open orders. Each shape gets its own columns: read through the other
+    one's keys, every cell was empty (#1539), and a coin quantity is not a
+    net-asset figure.
+    """
     cell = lambda v: "" if v is None else str(v)  # noqa: E731
+    rows = result.get("balances", [])
+    if any("asset" in row for row in rows):
+        table = Table(
+            title=f"Asset Balances · {result.get('profile_id')}",
+            caption=f"{len(rows)} non-zero balances",
+            box=box.SIMPLE_HEAVY,
+            show_lines=False,
+        )
+        table.add_column("Asset")
+        table.add_column("Free", justify="right")
+        table.add_column("Locked", justify="right")
+        table.add_column("Total", justify="right")
+        for row in rows:
+            table.add_row(cell(row.get("asset")), cell(row.get("free")), cell(row.get("used")), cell(row.get("total")))
+        console.print(table)
+        return EXIT_SUCCESS
     table = Table(title=f"Account Balances · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
     table.add_column("Currency")
     table.add_column("Net Assets", justify="right")
@@ -4038,7 +4661,7 @@ def _print_connector_balances(result: dict[str, Any]) -> int:
     table.add_column("Buy Power", justify="right")
     table.add_column("Init Margin", justify="right")
     table.add_column("Maint Margin", justify="right")
-    for row in result.get("balances", []):
+    for row in rows:
         table.add_row(
             cell(row.get("currency")),
             cell(row.get("net_assets")),
@@ -4046,6 +4669,29 @@ def _print_connector_balances(result: dict[str, Any]) -> int:
             cell(row.get("buy_power")),
             cell(row.get("init_margin")),
             cell(row.get("maintenance_margin")),
+        )
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def _print_connector_assets(result: dict[str, Any]) -> int:
+    """Render Futu's per-currency ``assets`` rows from ``accinfo_query``."""
+    cell = lambda v: "" if v is None else str(v)  # noqa: E731
+    table = Table(title=f"Account Assets · {result.get('profile_id')}", box=box.SIMPLE_HEAVY, show_lines=False)
+    table.add_column("Currency")
+    table.add_column("Total Assets", justify="right")
+    table.add_column("Cash", justify="right")
+    table.add_column("Market Value", justify="right")
+    table.add_column("Available Funds", justify="right")
+    table.add_column("Buying Power", justify="right")
+    for row in result.get("assets", []):
+        table.add_row(
+            cell(row.get("currency")),
+            cell(row.get("total_assets")),
+            cell(row.get("cash")),
+            cell(row.get("market_val")),
+            cell(row.get("available_funds")),
+            cell(row.get("power")),
         )
     console.print(table)
     return EXIT_SUCCESS
@@ -4071,14 +4717,20 @@ def _normalize_mcp_value(value: Any) -> Any:
     return value
 
 
-def _flatten_account_fields(data: dict[str, Any], prefix: str = "") -> list[tuple[str, str]]:
+def _flatten_account_fields(
+    data: dict[str, Any],
+    prefix: str = "",
+    *,
+    skip_zero: bool = True,
+) -> list[tuple[str, str]]:
     """Flatten a remote-MCP account payload into (tag, value) rows.
 
     Nested one level (e.g. ``buying_power.buying_power``) rather than
     recursing arbitrarily deep, since broker account payloads are shallow.
-    Skips ``None`` and zero-valued numeric-looking fields, matching the
-    guidance the broker's own response typically includes (zero means no
-    holdings in that asset class — noise to omit, not a real 0.00 balance).
+    Skips ``None``. By default it also skips zero-valued numeric-looking fields,
+    matching remote-MCP guidance where zero means an absent asset-class balance.
+    Direct SDK account summaries can disable that behavior because a zero or
+    false risk/status field is meaningful account state.
     """
     rows: list[tuple[str, str]] = []
     for key, value in data.items():
@@ -4087,16 +4739,67 @@ def _flatten_account_fields(data: dict[str, Any], prefix: str = "") -> list[tupl
         label = f"{prefix}{key}"
         normalized = _normalize_mcp_value(value)
         if isinstance(normalized, dict):
-            rows.extend(_flatten_account_fields(normalized, prefix=f"{label}."))
+            rows.extend(
+                _flatten_account_fields(
+                    normalized,
+                    prefix=f"{label}.",
+                    skip_zero=skip_zero,
+                )
+            )
             continue
         text = str(normalized)
-        try:
-            if float(text) == 0.0:
-                continue
-        except (TypeError, ValueError):
-            pass
+        if skip_zero:
+            try:
+                if float(text) == 0.0:
+                    continue
+            except (TypeError, ValueError):
+                pass
         rows.append((label, text))
     return rows
+
+
+def _print_connector_account_mapping(
+    result: dict[str, Any],
+    account_data: dict[str, Any],
+) -> int:
+    """Render the flat/nested ``account`` mapping used by direct SDK brokers."""
+    account_label = (
+        account_data.get("account_number")
+        or result.get("account_number")
+        or result.get("profile_id")
+        or result.get("profile")
+        or "unknown"
+    )
+    table = Table(
+        title=f"Account Summary · {result.get('profile_id') or result.get('profile') or account_label}",
+        box=box.SIMPLE_HEAVY,
+        show_lines=False,
+    )
+    table.add_column("Field")
+    table.add_column("Value", justify="right")
+    currency = account_data.get("currency")
+    if currency is not None:
+        table.add_row("currency", str(currency))
+    for tag, value in _flatten_account_fields(account_data, skip_zero=False):
+        table.add_row(tag, value)
+    console.print(f"Account: [cyan]{rich_escape(str(account_label))}[/cyan]")
+    console.print(table)
+    return EXIT_SUCCESS
+
+
+def _enum_text(value: Any) -> str:
+    """Render ``OrderSide.BUY``-style enum reprs as ``BUY``.
+
+    broker_sdk connectors stringify SDK enums, so the raw repr reaches the
+    table. Only strips when the prefix looks like a CamelCase class name (it
+    must contain a lowercase letter), so ticker symbols such as ``BRK.B`` and
+    decimal values are left alone.
+    """
+    text = str(value or "")
+    match = re.fullmatch(r"([A-Z][A-Za-z0-9_]*)\.([A-Z][A-Z0-9_]*)", text)
+    if match and any(ch.islower() for ch in match.group(1)):
+        return match.group(2)
+    return text
 
 
 def _print_connector_account(result: dict[str, Any]) -> int:
@@ -4108,6 +4811,15 @@ def _print_connector_account(result: dict[str, Any]) -> int:
         label = accounts if accounts != "(none)" else result.get("profile_id", result.get("profile", "unknown"))
         console.print(f"Accounts: [cyan]{rich_escape(str(label))}[/cyan]")
         return _print_connector_balances(result)
+    if not rows and result.get("assets"):
+        return _print_connector_assets(result)
+    account_data = _normalize_mcp_value(result.get("account"))
+    if not rows and isinstance(account_data, dict) and account_data:
+        return _print_connector_account_mapping(result, account_data)
+    # Trading 212 returns its cash and account metadata as two separate mappings.
+    split = {key: result[key] for key in ("cash", "metadata") if isinstance(result.get(key), dict) and result[key]}
+    if not rows and split:
+        return _print_connector_account_mapping(result, split)
     if not rows:
         # Not the broker_sdk flat shape — try the remote-MCP nested shape.
         # Robinhood's tool result double-wraps: result["data"] unwraps to
@@ -4300,15 +5012,18 @@ def cmd_connector_orders(
     for row in orders:
         contract = row.get("contract") or {}
         order = row.get("order") or row
-        order_status = row.get("status") or {}
+        # IBKR nests status as ``{"status": {"status": ...}}``; broker_sdk
+        # connectors (Alpaca, …) return it as a plain string on the flat row.
+        raw_status = row.get("status")
+        status_text = raw_status.get("status") if isinstance(raw_status, dict) else raw_status
         table.add_row(
             str(order.get("account") or ""),
-            str(contract.get("local_symbol") or contract.get("symbol") or ""),
-            str(order.get("action") or ""),
-            str(order.get("order_type") or ""),
-            str(order.get("total_quantity") or ""),
+            str(contract.get("local_symbol") or contract.get("symbol") or order.get("symbol") or ""),
+            _enum_text(order.get("action") or order.get("side") or ""),
+            _enum_text(order.get("order_type") or ""),
+            str(order.get("total_quantity") or order.get("quantity") or ""),
             str(order.get("limit_price") or ""),
-            str(order_status.get("status") or ""),
+            _enum_text(status_text or ""),
         )
     console.print(table)
     return EXIT_SUCCESS
@@ -4526,6 +5241,12 @@ def _dispatch_connector(args: argparse.Namespace) -> int:
     sub = getattr(args, "connector_command", None)
     if sub == "list":
         return cmd_connector_list()
+    if sub == "init":
+        return cmd_connector_init(args.connector_id, args.destination)
+    if sub == "validate":
+        return cmd_connector_validate(args.directory)
+    if sub == "install":
+        return cmd_connector_install(args.directory)
     if sub == "use":
         return cmd_connector_use(args.profile)
     if sub == "configure":
@@ -4537,14 +5258,30 @@ def _dispatch_connector(args: argparse.Namespace) -> int:
             account=args.account,
             yes=args.yes,
         )
-    if sub == "check":
-        return cmd_connector_check(
+    if sub == "setup":
+        return cmd_connector_setup(
             args.profile,
-            host=args.host,
-            port=args.port,
-            client_id=args.client_id,
+            connection_id=args.connection_id,
+            label=args.label,
+            skip_check=args.skip_check,
             account=args.account,
         )
+    if sub == "select-account":
+        return cmd_connector_select_account(
+            args.connection_id,
+            account=args.account,
+            clear=args.clear,
+        )
+    if sub == "check":
+        options = {
+            "host": args.host,
+            "port": args.port,
+            "client_id": args.client_id,
+            "account": args.account,
+        }
+        if args.connection_id is not None:
+            options["connection_id"] = args.connection_id
+        return cmd_connector_check(args.profile, **options)
     if sub == "account":
         return cmd_connector_account(
             args.profile,
@@ -4646,6 +5383,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--swarm-list", action="store_true", help="List swarm runs")
     parser.add_argument("--swarm-show", metavar="RUN_ID", help="Show a swarm run")
     parser.add_argument("--swarm-cancel", metavar="RUN_ID", help="Cancel a swarm run")
+    parser.add_argument("--swarm-retry", metavar="RUN_ID", help="Retry a prior swarm run")
+    parser.add_argument("--swarm-resume", action="store_true", help="Keep completed tasks when retrying a swarm run")
 
     parser.add_argument("--sessions", action="store_true", help="List sessions")
     parser.add_argument("--session-chat", metavar="SESSION_ID", help="Continue a session chat")
@@ -4714,6 +5453,10 @@ def _build_parser() -> argparse.ArgumentParser:
     chat_parser = subparsers.add_parser("chat", help="Interactive chat mode")
     chat_parser.add_argument("--max-iter", dest="chat_max_iter", type=int, default=50, help="Maximum agent iterations")
 
+    subparsers.add_parser(
+        "update", help="Check for and install the latest vibe-trading-ai release from PyPI"
+    )
+
     subparsers.add_parser("init", help="Interactive setup: create ~/.vibe-trading/.env")
 
     # Cross-platform frontend setup. See cmd_setup() for details.
@@ -4774,10 +5517,41 @@ def _build_parser() -> argparse.ArgumentParser:
     memory_forget_parser.add_argument("name", help="Memory title or filename stem")
     memory_forget_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
+    portfolio_parser = subparsers.add_parser(
+        "portfolio",
+        help="Read-only multi-broker portfolio (the Web UI /portfolio page, in the terminal)",
+    )
+    portfolio_subparsers = portfolio_parser.add_subparsers(dest="portfolio_command")
+    portfolio_subparsers.add_parser("show", help="Print the latest stored snapshot")
+    portfolio_subparsers.add_parser(
+        "refresh", help="Read every enabled source now, store a new snapshot, and print it"
+    )
+    portfolio_subparsers.add_parser(
+        "sources", help="List local read-only connections and whether the portfolio uses them"
+    )
+
     connector_parser = subparsers.add_parser("connector", help="Manage trading connector profiles")
     connector_subparsers = connector_parser.add_subparsers(dest="connector_command")
 
     connector_subparsers.add_parser("list", help="List selectable connector profiles")
+
+    connector_init = connector_subparsers.add_parser(
+        "init", help="Create a local read-only connector template"
+    )
+    connector_init.add_argument("connector_id", help="Lowercase connector id")
+    connector_init.add_argument(
+        "--destination", default=".", help="Parent directory for the template"
+    )
+
+    connector_validate = connector_subparsers.add_parser(
+        "validate", help="Validate a local connector directory"
+    )
+    connector_validate.add_argument("directory")
+
+    connector_install = connector_subparsers.add_parser(
+        "install", help="Install a validated connector locally"
+    )
+    connector_install.add_argument("directory")
 
     connector_use = connector_subparsers.add_parser("use", help="Select the default connector profile")
     connector_use.add_argument("profile", help="Profile id, e.g. ibkr-paper-local")
@@ -4807,9 +5581,32 @@ def _build_parser() -> argparse.ArgumentParser:
     connector_configure.add_argument("--account", default=None)
     connector_configure.add_argument("-y", "--yes", action="store_true", help="Overwrite without prompting")
 
+    connector_setup = connector_subparsers.add_parser(
+        "setup",
+        help="Create a local read-only connection and securely collect its credentials",
+    )
+    _add_connector_profile_arg(connector_setup, required=True)
+    connector_setup.add_argument("--connection-id", default=None)
+    connector_setup.add_argument("--label", default=None)
+    connector_setup.add_argument("--skip-check", action="store_true")
+    connector_setup.add_argument(
+        "--account",
+        default=None,
+        help="Account to scope an account-scoped connection (Robinhood) to; prompts when omitted",
+    )
+
+    connector_select_account = connector_subparsers.add_parser(
+        "select-account",
+        help="Choose the broker account an account-scoped connection reads",
+    )
+    connector_select_account.add_argument("connection_id", help="Local connection id")
+    connector_select_account.add_argument("--account", default=None, help="Account reference; prompts when omitted")
+    connector_select_account.add_argument("--clear", action="store_true", help="Remove the selection")
+
     connector_check = connector_subparsers.add_parser("check", help="Check selected connector readiness")
     _add_connector_profile_arg(connector_check)
     _add_connector_local(connector_check)
+    connector_check.add_argument("--connection-id", default=None)
 
     connector_status = connector_subparsers.add_parser("status", help="Show selected connector status")
     _add_connector_profile_arg(connector_status)
@@ -4866,6 +5663,14 @@ def _build_parser() -> argparse.ArgumentParser:
     from src.hypotheses.cli_handlers import add_subparser as _add_hypothesis_subparser
     _add_hypothesis_subparser(subparsers)
 
+    # Scheduled-research playbook templates (list / show / create)
+    from cli.commands.research_playbook import add_subparser as _add_playbook_subparser
+    _add_playbook_subparser(subparsers)
+
+    # Strategy-evidence cache refresh (manifest-driven rebuild)
+    from cli.commands.strategy_evidence import add_subparser as _add_strategy_evidence_subparser
+    _add_strategy_evidence_subparser(subparsers)
+
     return parser
 
 
@@ -4909,22 +5714,22 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_placeholder": "sk-or-v1-...",
     },
     {
-        "label": "Requesty (OpenAI-compatible gateway - multiple models)",
-        "provider": "requesty",
-        "key_env": "REQUESTY_API_KEY",
-        "base_env": "REQUESTY_BASE_URL",
-        "base_url": "https://router.requesty.ai/v1",
-        "model": "openai/gpt-4o-mini",
-        "key_prefix": None,
-        "key_placeholder": "api-key...",
-    },
-    {
         "label": "DeepSeek",
         "provider": "deepseek",
         "key_env": "DEEPSEEK_API_KEY",
         "base_env": "DEEPSEEK_BASE_URL",
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-v4-pro",
+        "key_prefix": "sk-",
+        "key_placeholder": "sk-...",
+    },
+    {
+        "label": "OpenCode (Go / Zen)",
+        "provider": "opencode",
+        "key_env": "OPENCODE_API_KEY",
+        "base_env": "OPENCODE_BASE_URL",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "model": "deepseek-v4.1-flash",
         "key_prefix": "sk-",
         "key_placeholder": "sk-...",
     },
@@ -4947,6 +5752,16 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "model": "deepseek-ai/DeepSeek-V3.1-Terminus",
         "key_prefix": "sk-",
         "key_placeholder": "sk-...",
+    },
+    {
+        "label": "ModelScope",
+        "provider": "modelscope",
+        "key_env": "MODELSCOPE_API_KEY",
+        "base_env": "MODELSCOPE_BASE_URL",
+        "base_url": "https://api-inference.modelscope.cn/v1",
+        "model": "Qwen/Qwen3.5-27B",
+        "key_prefix": None,
+        "key_placeholder": "api-key...",
     },
     {
         "label": "NVIDIA NIM",
@@ -5039,6 +5854,16 @@ _PROVIDER_CHOICES: list[dict[str, str | None]] = [
         "key_placeholder": "api-key...",
     },
     {
+        "label": "Novita AI",
+        "provider": "novita",
+        "key_env": "NOVITA_API_KEY",
+        "base_env": "NOVITA_BASE_URL",
+        "base_url": "https://api.novita.ai/openai",
+        "model": "moonshotai/kimi-k3",
+        "key_prefix": "sk_",
+        "key_placeholder": "sk_...",
+    },
+    {
         "label": "iFlytek Spark",
         "provider": "spark",
         "key_env": "SPARK_API_KEY",
@@ -5095,8 +5920,6 @@ def _render_env_content(config: dict[str, str]) -> str:
         "LANGCHAIN_PROVIDER",
         "OPENROUTER_API_KEY",
         "OPENROUTER_BASE_URL",
-        "REQUESTY_API_KEY",
-        "REQUESTY_BASE_URL",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_BASE_URL",
         "NVIDIA_API_KEY",
@@ -5108,6 +5931,8 @@ def _render_env_content(config: dict[str, str]) -> str:
         "GEMINI_BASE_URL",
         "GROQ_API_KEY",
         "GROQ_BASE_URL",
+        "NOVITA_API_KEY",
+        "NOVITA_BASE_URL",
         "DASHSCOPE_API_KEY",
         "DASHSCOPE_BASE_URL",
         "ZHIPU_API_KEY",
@@ -5732,15 +6557,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "list":
         return _coerce_exit_code(cmd_list(args.list_limit))
     if args.command == "show":
-        return _coerce_exit_code(cmd_show(args.show))
+        return _coerce_exit_code(cmd_show(args.run_id))
     if args.command == "chat":
         return _coerce_exit_code(cmd_interactive(args.chat_max_iter))
+    if args.command == "update":
+        from cli.commands.update import cmd_update
+
+        return _coerce_exit_code(cmd_update())
     if args.command == "alpha":
         from src.factors.cli_handlers import dispatch as _alpha_dispatch
         return _coerce_exit_code(_alpha_dispatch(args))
     if args.command == "hypothesis":
         from src.hypotheses.cli_handlers import dispatch as _hyp_dispatch
         return _coerce_exit_code(_hyp_dispatch(args))
+    if args.command == "playbook":
+        from cli.commands.research_playbook import dispatch as _playbook_dispatch
+        return _coerce_exit_code(_playbook_dispatch(args))
+    if args.command == "strategy-evidence":
+        from cli.commands.strategy_evidence import dispatch as _strategy_evidence_dispatch
+        return _coerce_exit_code(_strategy_evidence_dispatch(args))
+    if args.command == "portfolio":
+        return _coerce_exit_code(_dispatch_portfolio(args))
     if args.command == "connector":
         return _coerce_exit_code(_dispatch_connector(args))
     if args.command == "memory":
@@ -5784,6 +6621,11 @@ def main(argv: list[str] | None = None) -> int:
         return _coerce_exit_code(cmd_swarm_show(args.swarm_show))
     if args.swarm_cancel:
         return _coerce_exit_code(cmd_swarm_cancel(args.swarm_cancel))
+    if args.swarm_retry:
+        return _coerce_exit_code(cmd_swarm_retry_live(args.swarm_retry, resume=args.swarm_resume))
+    if args.swarm_resume:
+        console.print("[red]--swarm-resume requires --swarm-retry RUN_ID[/red]")
+        return EXIT_USAGE_ERROR
 
     if args.sessions:
         return _coerce_exit_code(cmd_sessions())

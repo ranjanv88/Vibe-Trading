@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,12 +26,14 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 import requests
 
+from backtest.engines._market_hooks import _detect_market
 from backtest.loaders.base import (
+    NoAvailableSourceError,
     cached_loader_fetch,
     validate_date_range,
     validate_ohlc,
 )
-from backtest.loaders.registry import register
+from backtest.loaders.registry import market_has_corporate_actions, register
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +54,48 @@ _DATE_KEYS = (
     "time",
     "period",
 )
+#: A quote bounds the bill only when it is a flat price per call: "24.2
+#: credits", "1 credits/call", or a bare number. ``cn_financial_pro.
+#: history_quotation.v1`` quoted "1 credits/result" and billed 9.66 credits for
+#: one stock-year, 244 rows x 30 fields at 0.00132 credits a value (#1494), so
+#: a quote priced per any other unit, or in a shape not listed here, reserves
+#: nothing that caps the charge and prices as unknown.
+_FLAT_QUOTE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:credits?)?\s*(?:(?:/|per)\s*(call|request))?")
+
+#: The four fields that must all be present for a record to become a bar.
+_PRICE_QUARTET = ("open", "high", "low", "close")
+
+#: Aliases for an unadjusted bar.
 _FIELD_ALIASES = {
     "open": ("open", "o", "1. open"),
     "high": ("high", "h", "2. high"),
     "low": ("low", "l", "3. low"),
-    "close": ("close", "c", "adj_close", "adjusted_close", "4. close"),
+    "close": ("close", "c", "4. close"),
     "volume": ("volume", "vol", "v", "5. volume", "6. volume"),
+}
+
+#: Volume names that make no adjustment claim, shared by both tables. The
+#: family split exists to stop unadjusted and adjusted *price levels* sharing a
+#: bar; volume is not a price level, so an adjusted bar must still report a
+#: volume the payload calls ``volume`` (``6. volume`` is Alpha Vantage's label
+#: for the adjusted series' volume) instead of silently reporting NaN. The
+#: unadjusted tuple is referenced rather than copied so the two cannot drift and
+#: the unadjusted path stays byte-identical.
+_PLAIN_VOLUME_ALIASES = _FIELD_ALIASES["volume"]
+
+#: Aliases for an adjusted bar, resolved as a complete alternate set rather
+#: than field by field. ``adj_close`` used to sit in the unadjusted ``close``
+#: aliases while it had no ``adj_open``/``adj_high``/``adj_low`` siblings,
+#: which cut both ways (#1494): a record carrying only adjusted fields failed
+#: the OHLC check on every row, so a billed call produced no bars, while a
+#: record carrying unadjusted open/high/low with only ``adj_close`` was
+#: accepted as one bar mixing unadjusted and adjusted price levels.
+_ADJUSTED_FIELD_ALIASES = {
+    "open": ("adj_open", "adjusted_open"),
+    "high": ("adj_high", "adjusted_high"),
+    "low": ("adj_low", "adjusted_low"),
+    "close": ("adj_close", "adjusted_close"),
+    "volume": ("adj_volume", "adjusted_volume") + _PLAIN_VOLUME_ALIASES,
 }
 
 
@@ -262,7 +301,7 @@ class DataLoader:
     """QVeris OHLCV loader, available only when explicitly configured."""
 
     name = "qveris"
-    markets = {"us_equity", "hk_equity", "a_share", "crypto", "forex", "fund", "macro"}
+    markets = {"crypto", "forex", "macro"}
     requires_auth = True
 
     def __init__(self) -> None:
@@ -298,9 +337,30 @@ class DataLoader:
 
         Raises:
             ValueError: If ``start_date`` > ``end_date``.
+            NoAvailableSourceError: If a symbol belongs to a market with
+                corporate actions, whose price adjustment this loader cannot
+                establish (#1494). Nothing is fetched or billed.
         """
         del fields
         validate_date_range(start_date, end_date)
+        # A market with splits and dividends would be served by whichever
+        # capability ranks first in search, and the ranking ignores adjustment:
+        # for 600519.SH the top pick was FMP's non_split_adjusted EOD, and
+        # mkt_bars_adjusted routed to a tool whose adj_close equalled the raw
+        # closes (#1494). No capability is pinned to a measured adjustment, so
+        # such a bar has no caliber anyone can state, and "unknown" stays out of
+        # every run-level caliber check. Refused before anything is billed.
+        refused = {code: _detect_market(code) for code in codes}
+        refused = {code: market for code, market in refused.items() if market_has_corporate_actions(market)}
+        if refused:
+            raise NoAvailableSourceError(
+                "source='qveris' does not serve markets with splits and dividends: it "
+                "picks a capability by search rank, which ignores price adjustment, so "
+                "these bars would reach the run at an adjustment nobody can state "
+                "(#1494). Refused: "
+                + ", ".join(f"{code} ({market})" for code, market in refused.items())
+                + ". Use a source with a measured price caliber for these symbols."
+            )
         if not self.is_available():
             logger.warning("qveris fetch skipped: disabled or %s not set", _API_KEY_ENV)
             return {}
@@ -349,12 +409,16 @@ class DataLoader:
             if not tool_id:
                 continue
             quoted_cost = _expected_cost(capability.get("expected_cost"))
-            if (
-                not math.isfinite(quoted_cost)
-                or quoted_cost < 0.0
-                or budget_state["spent"] + quoted_cost
-                > self._config.budget_credits_per_session
-            ):
+            if not math.isfinite(quoted_cost):
+                logger.warning(
+                    "QVeris capability %s skipped for %s: quote %r is not a flat "
+                    "price per call, so no reservation bounds its bill",
+                    tool_id,
+                    code,
+                    capability.get("expected_cost"),
+                )
+                continue
+            if budget_state["spent"] + quoted_cost > self._config.budget_credits_per_session:
                 logger.warning(
                     "QVeris paid capability skipped for %s: credit budget exceeded",
                     code,
@@ -468,20 +532,28 @@ def _success_rate(stats: Any) -> float:
     return parsed / 100.0 if parsed > 1.0 else parsed
 
 
+def quoted_call_cost(value: Any) -> float | None:
+    """Return the credits one call can cost under ``value``, or None.
+
+    Args:
+        value: A capability's ``expected_cost`` quote.
+
+    Returns:
+        The flat per-call price, or None when the quote does not bound the
+        bill: absent, negative, priced per result/row/value, or in any shape
+        ``_FLAT_QUOTE`` does not describe.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(value) and value >= 0 else None
+    match = _FLAT_QUOTE.fullmatch(str(value).strip().lower())
+    return float(match.group(1)) if match else None
+
+
 def _expected_cost(value: Any) -> float:
-    if value is None:
-        return float("inf")
-    text = str(value)
-    number = ""
-    for char in text:
-        if char.isdigit() or char == ".":
-            number += char
-        elif number:
-            break
-    try:
-        return float(number)
-    except ValueError:
-        return float("inf")
+    cost = quoted_call_cost(value)
+    return float("inf") if cost is None else cost
 
 
 def _build_parameters(
@@ -501,7 +573,7 @@ def _build_parameters(
             continue
         lower = name.lower()
         if _is_symbol_param(lower):
-            parameters[name] = _provider_symbol(code)
+            parameters[name] = code.strip().upper()
         elif _is_start_param(lower):
             parameters[name] = start_date
         elif _is_end_param(lower):
@@ -519,14 +591,6 @@ def _sample_parameters(capability: dict[str, Any]) -> dict[str, Any]:
     return dict(sample) if isinstance(sample, dict) else {}
 
 
-def _provider_symbol(code: str) -> str:
-    """Normalize common project US suffixes while preserving other markets."""
-    upper = code.strip().upper()
-    if upper.endswith(".US"):
-        return upper[: -len(".US")]
-    return upper
-
-
 def _is_symbol_param(name: str) -> bool:
     return any(token in name for token in ("symbol", "ticker", "instrument", "code"))
 
@@ -536,7 +600,16 @@ def _is_start_param(name: str) -> bool:
 
 
 def _is_end_param(name: str) -> bool:
-    return any(token in name for token in ("end", "to", "until"))
+    normalized = name.replace("-", "_")
+    return normalized in {
+        "end",
+        "end_date",
+        "enddate",
+        "to",
+        "to_date",
+        "until",
+        "until_date",
+    }
 
 
 def _is_interval_param(name: str) -> bool:
@@ -553,8 +626,37 @@ def _interval_value(param: dict[str, Any], interval: str) -> str:
     return "daily" if interval.upper() == "1D" else interval
 
 
+def _response_field_set(records: list[dict[str, Any]]) -> dict[str, tuple[str, ...]] | None:
+    """Return the one alias table every usable record in a response supports.
+
+    Choosing per record let one payload carry an unadjusted row and an
+    adjusted-only row, and the series then mixed the two price levels (#1527).
+    Records with no complete quartet are skipped as before; if the rest do not
+    share a family the response yields no bars rather than a mixed series.
+    """
+    complete = [
+        [table for table in (_FIELD_ALIASES, _ADJUSTED_FIELD_ALIASES) if _resolve_field_set_in(keys, table)]
+        for keys in ({str(key).lower() for key in record} for record in records)
+    ]
+    complete = [tables for tables in complete if tables]
+    for table in (_FIELD_ALIASES, _ADJUSTED_FIELD_ALIASES):
+        if complete and all(table in tables for tables in complete):
+            return table
+    if complete:
+        logger.warning("QVeris response mixes unadjusted and adjusted records; no bars built from it")
+    return None
+
+
+def _resolve_field_set_in(keys: set[str], table: dict[str, tuple[str, ...]]) -> bool:
+    return all(any(alias in keys for alias in table[field]) for field in _PRICE_QUARTET)
+
+
 def _result_to_frame(result: Any, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
-    rows = [_normalize_record(record) for record in _iter_ohlcv_records(result)]
+    records = list(_iter_ohlcv_records(result))
+    table = _response_field_set(records)
+    if table is None:
+        return None
+    rows = [_normalize_record(record, table) for record in records]
     cleaned = [row for row in rows if row is not None]
     if not cleaned:
         return None
@@ -647,25 +749,38 @@ def _looks_like_date(value: Any) -> bool:
     return True
 
 
+def _resolve_field_set(keys: Iterable[str]) -> dict[str, tuple[str, ...]] | None:
+    """Return the alias table that supplies one complete price quartet.
+
+    The unadjusted table wins when a record carries both sets, which is the
+    preference the previous single-table lookup had. ``None`` means neither
+    table is complete, so a bar is never assembled from a mix of unadjusted and
+    adjusted fields.
+    """
+    for table in (_FIELD_ALIASES, _ADJUSTED_FIELD_ALIASES):
+        if _resolve_field_set_in(set(keys), table):
+            return table
+    return None
+
+
 def _record_has_ohlc(record: dict[str, Any]) -> bool:
-    lowered = {str(key).lower() for key in record}
-    return all(any(alias in lowered for alias in aliases) for aliases in (
-        _FIELD_ALIASES["open"],
-        _FIELD_ALIASES["high"],
-        _FIELD_ALIASES["low"],
-        _FIELD_ALIASES["close"],
-    ))
+    return _resolve_field_set({str(key).lower() for key in record}) is not None
 
 
-def _normalize_record(record: dict[str, Any]) -> dict[str, Any] | None:
+def _normalize_record(record: dict[str, Any], table: dict[str, tuple[str, ...]]) -> dict[str, Any] | None:
+    """Build one bar from ``record`` using the response's alias ``table``.
+
+    An unadjusted bar never takes ``adj_volume``: split-adjusted volume is not
+    on the scale of unadjusted prices, so a missing unadjusted volume stays NaN.
+    """
     lowered = {str(key).lower(): value for key, value in record.items()}
     date = _first_value(lowered, _DATE_KEYS)
     if date is None:
         return None
     row = {"trade_date": date}
-    for field, aliases in _FIELD_ALIASES.items():
-        row[field] = _first_value(lowered, aliases)
-    if any(row[field] is None for field in ("open", "high", "low", "close")):
+    for field in _OHLCV_COLUMNS:
+        row[field] = _first_value(lowered, table[field])
+    if any(row[field] is None for field in _PRICE_QUARTET):
         return None
     return row
 

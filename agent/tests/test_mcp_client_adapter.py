@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import httpx
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.client import CallToolResult
@@ -19,6 +20,7 @@ from fastmcp.exceptions import McpError, ToolError
 from mcp import types as mcp_types
 from pydantic import BaseModel, field_serializer
 
+import src.tools.mcp as mcp_module
 from src.config.schema import MCPServerConfig
 from src.tools.mcp import (
     MCPServerAdapter,
@@ -466,7 +468,7 @@ def test_data_only_fallback_uses_pydantic_json_serialization() -> None:
         _StandardJsonAdapters(
             amount=Decimal("1234.5600"),
             order_id=UUID("12345678-1234-5678-1234-567812345678"),
-            output_path=Path("reports/daily.json"),
+            output_path=Path("daily.json"),
             state=_OrderState.OPEN,
             labels={"beta", "alpha"},
             range_pair=(1, 5),
@@ -478,7 +480,7 @@ def test_data_only_fallback_uses_pydantic_json_serialization() -> None:
     assert payload["data"] == {
         "amount": "1234.5600",
         "order_id": "12345678-1234-5678-1234-567812345678",
-        "output_path": "reports/daily.json",
+        "output_path": "daily.json",
         "state": "open",
         "range_pair": [1, 5],
     }
@@ -779,3 +781,57 @@ def test_build_client_rejects_url_only_config_without_explicit_type() -> None:
 
     with pytest.raises(ValueError, match="explicit type"):
         adapter._build_client()
+
+
+class TestHttpErrorBodyIsReported:
+    """A remote HTTP failure must carry the server's own explanation.
+
+    ``httpx.HTTPStatusError`` stringifies to status + URL only. IBKR answers a
+    token it will not accept with a 400 and
+    ``{"error":"Status failed 500","statusCode":400}``, while an unauthenticated
+    request gets a 401 — indistinguishable without the body, which is what made
+    issue #1126 read as a malformed-request bug rather than an auth rejection.
+    """
+
+    @staticmethod
+    def _status_error(status: int, body: str) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://api.example.test/v1/api/mcp")
+        response = httpx.Response(status, text=body, request=request)
+        return httpx.HTTPStatusError(
+            f"Client error '{status}' for url '{request.url}'",
+            request=request,
+            response=response,
+        )
+
+    def test_the_message_includes_the_response_body(self) -> None:
+        exc = self._status_error(400, '{"error":"Status failed 500","statusCode":400}')
+        message = mcp_module._format_exception_message(exc)
+        assert "Status failed 500" in message
+
+    def test_an_empty_body_adds_nothing(self) -> None:
+        exc = self._status_error(400, "   ")
+        assert mcp_module._format_exception_message(exc) == str(exc)
+
+    def test_an_oversized_body_is_truncated(self) -> None:
+        exc = self._status_error(500, "x" * 5000)
+        message = mcp_module._format_exception_message(exc)
+        assert message.endswith("...")
+        assert len(message) < 700
+
+    def test_a_non_http_exception_is_unchanged(self) -> None:
+        assert mcp_module._format_exception_message(ValueError("plain")) == "plain"
+
+    def test_discovery_reraises_the_same_type_with_the_body(self, monkeypatch) -> None:
+        exc = self._status_error(400, '{"error":"Status failed 500","statusCode":400}')
+
+        def _raise(_operation):
+            raise exc
+
+        monkeypatch.setattr(mcp_module, "_run_sync", _raise)
+        adapter = MCPServerAdapter.__new__(MCPServerAdapter)
+
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            MCPServerAdapter.discover_tools(adapter)
+
+        assert "Status failed 500" in str(caught.value)
+        assert caught.value.response.status_code == 400

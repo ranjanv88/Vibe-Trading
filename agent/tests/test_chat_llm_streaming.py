@@ -347,3 +347,46 @@ def test_provider_stream_error_hints_at_base_url_on_html_body() -> None:
     assert "HTML page" in message
     assert "base URL" in message
     assert "zai" in message
+
+
+def test_stream_idle_timeout_aborts_a_stalled_stream() -> None:
+    """A stream whose deltas stall past the idle budget fails retryably.
+
+    The loop passes idle_timeout_s so a provider that stops emitting
+    chunks (silent stall) surfaces as a retryable ProviderStreamError
+    instead of hanging the run indefinitely.
+    """
+    import time
+
+    class _StallingLLM(_FakeStreamingLLM):
+        def stream(self, messages, config=None):
+            yield _FakeChunk(content="first")
+            time.sleep(0.6)  # longer than idle_timeout_s below
+            yield _FakeChunk(content="second")
+
+    client = _client(_StallingLLM())
+    with pytest.raises(ProviderStreamError) as excinfo:
+        client.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            idle_timeout_s=0.2,
+        )
+    assert excinfo.value.retryable is True
+
+
+def test_stream_idle_timeout_allows_a_flowing_stream() -> None:
+    """Chunks arriving within the idle budget are unaffected by the timeout."""
+    import time
+
+    class _FlowingLLM(_FakeStreamingLLM):
+        def stream(self, messages, config=None):
+            yield _FakeChunk(content="a")
+            time.sleep(0.05)
+            yield _FakeChunk(content="b")
+
+    client = _client(_FlowingLLM())
+    response = client.stream_chat(
+        [{"role": "user", "content": "hi"}],
+        idle_timeout_s=0.2,
+    )
+    assert response.content == "ab"
+

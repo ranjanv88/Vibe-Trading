@@ -13,6 +13,10 @@ export const SUPPORTED_LANGUAGES = [
   { code: "ja", label: "日本語", dir: "ltr" as const },
   { code: "ko", label: "한국어", dir: "ltr" as const },
   { code: "ar", label: "العربية", dir: "rtl" as const },
+  { code: "es", label: "Español", dir: "ltr" as const },
+  { code: "de", label: "Deutsch", dir: "ltr" as const },
+  { code: "pt-BR", label: "Português (Brasil)", dir: "ltr" as const },
+  { code: "id", label: "Bahasa Indonesia", dir: "ltr" as const },
 ] as const;
 
 export type SupportedLanguageCode = (typeof SUPPORTED_LANGUAGES)[number]["code"];
@@ -23,6 +27,10 @@ const localeLoaders = {
   ja: () => import("./locales/ja.json"),
   ko: () => import("./locales/ko.json"),
   ar: () => import("./locales/ar.json"),
+  es: () => import("./locales/es.json"),
+  de: () => import("./locales/de.json"),
+  "pt-BR": () => import("./locales/pt-BR.json"),
+  id: () => import("./locales/id.json"),
 } satisfies Record<LazyLanguageCode, () => Promise<{ default: typeof en }>>;
 
 const LANGUAGE_STORAGE_KEY = "i18nextLng";

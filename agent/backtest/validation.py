@@ -20,6 +20,7 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
+from backtest.metrics import effective_bars_per_year
 from backtest.models import TradeRecord
 
 
@@ -31,6 +32,7 @@ def monte_carlo_test(
     initial_capital: float,
     n_simulations: int = 1000,
     seed: int = 42,
+    bars_per_year: int = 252,
 ) -> Dict[str, Any]:
     """Shuffle trade PnL order to test path significance.
 
@@ -42,6 +44,8 @@ def monte_carlo_test(
         initial_capital: Starting capital.
         n_simulations: Number of random permutations.
         seed: Random seed for reproducibility.
+        bars_per_year: Annualisation factor (must match bootstrap_sharpe_ci
+            and walk_forward_analysis so the report's Sharpe figures agree).
 
     Returns:
         Dict with actual_sharpe, p_value_sharpe, actual_max_dd,
@@ -58,7 +62,7 @@ def monte_carlo_test(
         return {"error": "need at least 3 trades", "p_value_sharpe": 1.0}
 
     pnls = np.array([t.pnl for t in trades])
-    actual = _path_metrics(pnls, initial_capital)
+    actual = _path_metrics(pnls, initial_capital, bars_per_year)
 
     rng = np.random.default_rng(seed)
     sharpe_count = 0
@@ -73,7 +77,7 @@ def monte_carlo_test(
         shuffled = rng.permutation(pnls)
         if sim_equities is not None:
             sim_equities[i] = initial_capital + np.cumsum(shuffled)
-        sim = _path_metrics(shuffled, initial_capital)
+        sim = _path_metrics(shuffled, initial_capital, bars_per_year)
         sim_sharpes.append(sim["sharpe"])
         if sim["sharpe"] >= actual["sharpe"]:
             sharpe_count += 1
@@ -113,12 +117,19 @@ def monte_carlo_test(
     return result
 
 
-def _path_metrics(pnls: np.ndarray, initial_capital: float) -> Dict[str, float]:
+def _path_metrics(
+    pnls: np.ndarray, initial_capital: float, bars_per_year: int = 252
+) -> Dict[str, float]:
     """Compute Sharpe and max drawdown from a PnL sequence."""
     equity = initial_capital + np.cumsum(pnls)
-    returns = np.diff(equity) / equity[:-1] if len(equity) > 1 else np.array([0.0])
+    if len(equity) > 1:
+        prev = equity[:-1]
+        diff = np.diff(equity)
+        returns = np.where(prev != 0, diff / np.where(prev != 0, prev, 1.0), 0.0)
+    else:
+        returns = np.array([0.0])
     std = returns.std()
-    sharpe = float(returns.mean() / (std + 1e-10) * np.sqrt(252))
+    sharpe = float(returns.mean() / (std + 1e-10) * np.sqrt(bars_per_year))
     peak = np.maximum.accumulate(equity)
     dd = (equity - peak) / np.where(peak > 0, peak, 1.0)
     max_dd = float(dd.min())
@@ -160,7 +171,7 @@ def bootstrap_sharpe_ci(
     if isinstance(seed, bool) or not isinstance(seed, Integral) or seed < 0:
         return {"error": f"seed must be >= 0, got {seed}"}
 
-    returns = equity_curve.pct_change().dropna().values
+    returns = equity_curve.pct_change().replace([np.inf, -np.inf], 0.0).dropna().values
     if len(returns) < 5:
         return {"error": "need at least 5 return observations"}
 
@@ -240,7 +251,7 @@ def walk_forward_analysis(
 
         # Per-window metrics
         ret = float(win_eq.iloc[-1] / win_eq.iloc[0] - 1) if win_eq.iloc[0] > 0 else 0.0
-        win_returns = win_eq.pct_change().dropna().values
+        win_returns = win_eq.pct_change().replace([np.inf, -np.inf], 0.0).dropna().values
         sharpe = _sharpe(win_returns, bars_per_year) if len(win_returns) > 1 else 0.0
 
         peak = win_eq.cummax()
@@ -288,7 +299,7 @@ def run_validation(
     equity_curve: pd.Series,
     trades: List[TradeRecord],
     initial_capital: float,
-    bars_per_year: int = 252,
+    bars_per_year: int | None = 252,
 ) -> Dict[str, Any]:
     """Run configured validation checks.
 
@@ -310,6 +321,13 @@ def run_validation(
     v_cfg = config.get("validation", {})
     results: Dict[str, Any] = {}
 
+    # Cross-market convention (runner.py passes bars_per_year=None): resolve
+    # it through the shared span-derived factor — otherwise _sharpe's
+    # np.sqrt(bars_per_year) raises TypeError for every validation-enabled
+    # cross-market run.
+    if bars_per_year is None:
+        bars_per_year = effective_bars_per_year(equity_curve.index)
+
     if "monte_carlo" in v_cfg:
         mc_cfg = v_cfg["monte_carlo"] if isinstance(v_cfg["monte_carlo"], dict) else {}
         results["monte_carlo"] = monte_carlo_test(
@@ -317,6 +335,7 @@ def run_validation(
             initial_capital,
             n_simulations=mc_cfg.get("n_simulations", 1000),
             seed=mc_cfg.get("seed", 42),
+            bars_per_year=bars_per_year,
         )
 
     if "bootstrap" in v_cfg:
@@ -367,8 +386,10 @@ def _load_trades(run_dir: Path) -> List[TradeRecord]:
     trades = []
     exit_rows = df[df["pnl"] != 0].reset_index(drop=True)
     for _, row in exit_rows.iterrows():
-        hold = pd.to_numeric(row.get("holding_days", 0), errors="coerce")
-        holding_bars = 0 if pd.isna(hold) else int(hold)
+        hold = pd.to_numeric(row.get("holding_bars"), errors="coerce")
+        if pd.isna(hold):
+            hold = pd.to_numeric(row.get("holding_days", 0), errors="coerce")
+        holding_bars = 0.0 if pd.isna(hold) else float(hold)
         trades.append(
             TradeRecord(
                 symbol=str(row.get("code", "")),

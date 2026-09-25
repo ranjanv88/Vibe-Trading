@@ -32,11 +32,19 @@ def test_extract_us_hk_a_share_and_crypto_symbols() -> None:
         "crypto": "Hedge with BTC-USDT",
         "shenzhen": "000001.SZ for liquidity",
         "beijing": "Listed on 430090.BJ recently",
+        "canada": "Compare TD.TO with TSX Venture name PNG.V",
     }
     found = grounding.extract_symbols_from_user_vars(user_vars)
     assert set(found) == {
         "NVDA.US", "700.HK", "600519.SH", "BTC-USDT", "000001.SZ", "430090.BJ",
+        "TD.TO", "PNG.V",
     }
+
+
+def test_extract_canadian_class_symbol() -> None:
+    assert grounding.extract_symbols_from_user_vars(
+        {"target": "Review BBD-B.TO in CAD"}
+    ) == ["BBD-B.TO"]
 
 
 def test_extract_preserves_first_occurrence_order() -> None:

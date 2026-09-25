@@ -1,8 +1,17 @@
 import { memo } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import i18n from "../../../i18n";
+import { api } from "@/lib/api";
 import { Composer } from "../Composer";
+
+vi.mock("@/lib/api", () => ({
+  api: { uploadFile: vi.fn() },
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 const baseProps = {
   streaming: false,
@@ -27,6 +36,11 @@ describe("Composer", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(api.uploadFile).mockImplementation(async (file: File) => ({
+      status: "ok",
+      filename: file.name,
+      file_path: `uploads/${file.name}`,
+    }));
   });
 
   afterEach(() => {
@@ -51,7 +65,7 @@ describe("Composer", () => {
     vi.advanceTimersByTime(81);
     fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
     expect(baseProps.onSubmit).toHaveBeenCalledTimes(1);
-    expect(baseProps.onSubmit).toHaveBeenCalledWith("你好", null);
+    expect(baseProps.onSubmit).toHaveBeenCalledWith("你好", []);
   });
 
   it("keeps composer keystrokes inside the composer render boundary", async () => {
@@ -73,5 +87,70 @@ describe("Composer", () => {
     await user.type(screen.getByRole("textbox"), "local composer state");
 
     expect(messageListRenderCount).toBe(1);
+  });
+
+  it("uploads multiple dropped files and submits them together", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<Composer {...baseProps} />);
+    const form = container.querySelector("form");
+    expect(form).not.toBeNull();
+    const files = [
+      new File(["trade,date"], "trades.csv", { type: "text/csv" }),
+      new File(["chart"], "chart.png", { type: "image/png" }),
+    ];
+
+    fireEvent.drop(form!, {
+      dataTransfer: { files, types: ["Files"] },
+    });
+
+    await waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("trades.csv")).toBeInTheDocument();
+    expect(screen.getByText("chart.png")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "Compare these files");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(baseProps.onSubmit).toHaveBeenCalledWith("Compare these files", [
+      { filename: "trades.csv", filePath: "uploads/trades.csv" },
+      { filename: "chart.png", filePath: "uploads/chart.png" },
+    ]);
+  });
+
+  it("uploads an image pasted from the clipboard and allows attachment-only submit", async () => {
+    const user = userEvent.setup();
+    render(<Composer {...baseProps} />);
+    const textarea = screen.getByRole("textbox");
+    const image = new File(["pixels"], "clipboard.png", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [image] },
+    });
+
+    await screen.findByText("clipboard.png");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    expect(baseProps.onSubmit).toHaveBeenCalledWith("", [
+      { filename: "clipboard.png", filePath: "uploads/clipboard.png" },
+    ]);
+  });
+
+  it("shows a drop target while files are dragged over the composer", () => {
+    const { container } = render(<Composer {...baseProps} />);
+    const form = container.querySelector("form");
+    fireEvent.dragEnter(form!, {
+      dataTransfer: { files: [], types: ["Files"] },
+    });
+    expect(screen.getByText("Drop files here")).toBeInTheDocument();
+  });
+
+  it("caps one composer turn at five attachments", async () => {
+    const { container } = render(<Composer {...baseProps} />);
+    const files = Array.from(
+      { length: 6 },
+      (_, index) => new File([String(index)], `file-${index}.txt`, { type: "text/plain" }),
+    );
+    fireEvent.drop(container.querySelector("form")!, {
+      dataTransfer: { files, types: ["Files"] },
+    });
+    await waitFor(() => expect(api.uploadFile).toHaveBeenCalledTimes(5));
+    expect(screen.queryByText("file-5.txt")).not.toBeInTheDocument();
   });
 });

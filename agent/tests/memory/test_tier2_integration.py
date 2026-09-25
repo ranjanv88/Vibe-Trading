@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,18 @@ class TestHierarchyAddRoutesToSubdir:
         # File should live under tmp_path/user/
         assert path.parent == tmp_path / "user"
         assert path.exists()
+
+    def test_hierarchy_add_writes_discoverable_md(self, tmp_path, monkeypatch):
+        """With VT_MEMORY_HIERARCHY=true, add() must write a .md that list_entries sees."""
+        monkeypatch.setenv("VT_MEMORY_HIERARCHY", "true")
+        reset_env_config()
+
+        mem = PersistentMemory(tmp_path)
+        path = mem.add("visible entry", "content that must be discoverable", "project")
+
+        assert path is not None
+        assert path.suffix == ".md"
+        assert "visible entry" in {e.title for e in mem.list_entries()}
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +192,158 @@ class TestFtsAddThenSearchFinds:
         results = mem.find_relevant("backtest")
         assert len(results) >= 1
         assert any("quant" in e.title.lower() for e in results)
+
+
+# ---------------------------------------------------------------------------
+# 4a. Fallback token-scan must find the same short-token content the FTS5
+# path does — find_relevant() must not silently miss entries just because
+# VT_MEMORY_FTS_INDEX happens to be off.
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackMatchesFtsForShortTokens:
+    """A 2-character query (e.g. a ticker symbol or country code) must be
+    retrievable through the token-scan fallback exactly as it is through the
+    FTS5 index, regardless of which VT_MEMORY_FTS_INDEX setting is active."""
+
+    def test_fallback_finds_short_token_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "false")
+        reset_env_config()
+
+        mem = PersistentMemory(tmp_path)
+        mem.add(
+            "GE earnings note",
+            "GE reported strong earnings this quarter, beating estimates.",
+            "project",
+        )
+
+        results = mem.find_relevant("GE")
+        assert len(results) == 1
+        assert results[0].title == "GE earnings note"
+
+    def test_fallback_and_fts_agree_on_short_token_query(self, tmp_path, monkeypatch, fts_db):
+        mem = PersistentMemory(tmp_path)
+        mem.add(
+            "GE earnings note",
+            "GE reported strong earnings this quarter, beating estimates.",
+            "project",
+        )
+
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "false")
+        reset_env_config()
+        fallback_titles = {e.title for e in mem.find_relevant("GE")}
+
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "true")
+        reset_env_config()
+        fts_titles = {e.title for e in mem.find_relevant("GE")}
+
+        assert fallback_titles == fts_titles == {"GE earnings note"}
+
+
+# ---------------------------------------------------------------------------
+# 4b. FTS: importance decay must still influence ranking (VT_MEMORY=full
+# enables fts_index_enabled and decay_enabled together)
+# ---------------------------------------------------------------------------
+
+
+class TestFtsRankingRespectsImportanceDecay:
+    """FTS5 candidate retrieval must not silently bypass importance-decay
+    weighting when both features are enabled together, the exact combination
+    the documented VT_MEMORY=full preset turns on."""
+
+    @staticmethod
+    def _write_entry(tmp_path, filename, name, quality_score, days_ago, access_count, body, entry_id):
+        last_accessed = (datetime.now() - timedelta(days=days_ago)).isoformat()
+        created = datetime.now().isoformat()
+        path = tmp_path / filename
+        path.write_text(
+            "---\n"
+            f"name: {name}\n"
+            f"description: {name}\n"
+            "type: project\n"
+            f"id: {entry_id}\n"
+            f"created_at: {created}\n"
+            f"updated_at: {created}\n"
+            "keywords: []\n"
+            f"quality_score: {quality_score}\n"
+            f"access_count: {access_count}\n"
+            f"last_accessed: {last_accessed}\n"
+            "importance: 0.5\n"
+            "related_memories: []\n"
+            "---\n\n"
+            f"{body}\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def _seed_entries(self, tmp_path):
+        # Fresh, heavily-accessed entry: high decayed importance, weaker
+        # lexical match (query term appears once, diluted by other words).
+        self._write_entry(
+            tmp_path, "project_fresh.md", "fresh important entry",
+            quality_score=0.95, days_ago=0, access_count=50,
+            body="trading context and other unrelated filler words here",
+            entry_id="fresh1",
+        )
+        # Ancient, never-accessed entry: near-zero decayed importance,
+        # stronger lexical match (query term repeated in a short body).
+        self._write_entry(
+            tmp_path, "project_stale.md", "stale unimportant entry",
+            quality_score=0.05, days_ago=400, access_count=0,
+            body="trading trading focus notes only",
+            entry_id="stale1",
+        )
+
+    def test_fts_ranking_reordered_by_importance_when_decay_enabled(self, tmp_path, monkeypatch, fts_db):
+        """With FTS and decay both on, an entry with much higher decayed
+        importance should outrank a purely stronger lexical match, not just
+        get returned somewhere in the result set."""
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "true")
+        monkeypatch.setenv("VT_MEMORY_DECAY", "true")
+        reset_env_config()
+
+        self._seed_entries(tmp_path)
+        mem = PersistentMemory(tmp_path)
+        entries = mem._scan_entries()
+
+        # Sanity check: the importance gap this test relies on is real.
+        importance = {e.title: e.importance for e in entries}
+        assert importance["fresh important entry"] > 0.9
+        assert importance["stale unimportant entry"] < 0.01
+
+        from src.memory.search_index import get_shared_index
+        get_shared_index().rebuild_all(
+            [(e.id, e.title, e.description, "", e.body) for e in entries]
+        )
+
+        results = mem.find_relevant("trading")
+        titles = [r.title for r in results]
+        assert titles[0] == "fresh important entry", (
+            "decayed importance should outrank a purely stronger lexical match "
+            f"once FTS and decay are combined, got order: {titles}"
+        )
+
+    def test_fts_ranking_unchanged_when_decay_disabled(self, tmp_path, monkeypatch, fts_db):
+        """Control: with decay off, FTS ordering is untouched by this fix,
+        pure lexical relevance still wins, exactly as before the change."""
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "true")
+        monkeypatch.setenv("VT_MEMORY_DECAY", "false")
+        reset_env_config()
+
+        self._seed_entries(tmp_path)
+        mem = PersistentMemory(tmp_path)
+        entries = mem._scan_entries()
+
+        from src.memory.search_index import get_shared_index
+        get_shared_index().rebuild_all(
+            [(e.id, e.title, e.description, "", e.body) for e in entries]
+        )
+
+        results = mem.find_relevant("trading")
+        titles = [r.title for r in results]
+        assert titles[0] == "stale unimportant entry", (
+            f"with decay disabled, pure FTS lexical relevance should win, got order: {titles}"
+        )
 
 
 # ---------------------------------------------------------------------------

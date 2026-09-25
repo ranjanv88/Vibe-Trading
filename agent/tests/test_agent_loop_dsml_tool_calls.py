@@ -128,3 +128,56 @@ def test_agent_loop_executes_dsml_textual_tool_call(
     assert {
         payload["tool"] for payload in tool_events.values()
     } == {"echo_probe"}
+
+def test_agent_loop_never_releases_tool_call_syntax_as_a_final_answer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Forced-text final answers containing tool-call DSL are not released raw.
+
+    On the last iteration tools are withheld to guarantee a plain-text answer,
+    but a model can still emit its native tool-call markup as prose (plain or
+    fullwidth-vbar mojibake). That markup is not an answer: the loop must
+    retry when budget remains, otherwise release a deterministic message and
+    mark the run degraded instead of leaking ``<...tool_calls>`` to the user.
+    """
+    class _ImmediateHeartbeatTimer:
+        def __init__(self, tool_name: str, interval: float, emit) -> None:
+            del interval
+            self._tool_name = tool_name
+            self._emit = emit
+
+        def __enter__(self):
+            self._emit({"tool": self._tool_name, "elapsed_s": 0.01})
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "src.agent.loop.HeartbeatTimer", _ImmediateHeartbeatTimer
+    )
+    # The fullwidth-vbar (U+FF5C) form is what the real failure looked like; the
+    # streaming DSML parser does not recognize it, so it arrives as text.
+    garbage = "<││DSML││tool_calls><││invoke name=\"trading_quote\">"
+    registry = ToolRegistry()
+    events: list[tuple[str, dict[str, Any]]] = []
+    agent = AgentLoop(
+        registry=registry,
+        llm=_chat_llm(_ScriptedStreamingLLM([garbage])),
+        event_callback=lambda event_type, payload: events.append((event_type, payload)),
+        max_iterations=1,  # the single iteration is the forced-text last one
+        persistent_memory=PersistentMemory(memory_dir=tmp_path / "memory"),
+    )
+    agent.memory.run_dir = str(tmp_path / "run")
+
+    result = agent.run("hello")
+
+    assert result["status"] == "success"
+    assert result.get("degraded") is True
+    assert "tool-call syntax" in result["content"]
+    assert "<" not in result["content"]
+    assert not any(
+        event_type == "answer" and "<" in str(payload)
+        for event_type, payload in events
+    )

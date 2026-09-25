@@ -81,6 +81,8 @@ def test_clamp_helpers_survive_non_finite_and_preserve_finite_values() -> None:
     assert symbol_clamp_limit(float("inf")) == 10
     assert _coerce_expiration(float("inf")) is None
     assert _coerce_expiration(float("-inf")) is None
+    assert _coerce_expiration(True) is None
+    assert _coerce_expiration(False) is None
 
     # Finite requests must be untouched by the hardening.
     assert _clamp_lookback(7) == 7

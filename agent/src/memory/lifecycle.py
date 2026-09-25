@@ -240,14 +240,23 @@ class MemoryLifecycle:
 
         self._append_gc_log(actions, dry_run)
 
-        # Tier 2: Trigger compression for aged entries
+        # Tier 2: Trigger compression for aged entries. Skipped on dry_run:
+        # compression rewrites entry bodies and frontmatter in place, and a
+        # dry run must not mutate the files it is only auditing. An entry
+        # Tier 1 archived or deleted is skipped too: _execute_gc_action renamed
+        # or unlinked entry.path, and this is the pre-Tier-1 snapshot. The
+        # check is on the path, not on entry.id: ids are a six-hex hash two
+        # files can share, and an archive step that returned early (lock
+        # timeout, OSError) leaves its file in place to be compressed (#1450).
         from src.config.accessor import get_env_config
-        if get_env_config().memory.compression_enabled:
+        if not dry_run and get_env_config().memory.compression_enabled:
             try:
                 from src.memory.compression import CompressionPipeline
                 pipeline = CompressionPipeline(self._memory._dir)
                 now_ts = time.time()
                 for entry in entries:
+                    if not entry.path.exists():
+                        continue
                     target = pipeline.should_compress(
                         compression_level=entry.compression_level,
                         last_accessed=entry.last_accessed,
@@ -294,6 +303,28 @@ class MemoryLifecycle:
 
         # Rebuild index after removal
         self._memory._rebuild_index()
+
+        # An archived/deleted entry no longer appears in _scan_entries(), so
+        # a stale FTS row or semantic link left behind here is unreachable by
+        # id lookup but still ranks in search results, silently displacing a
+        # real match that PersistentMemory.remove()/remove_entry() would not.
+        from src.config.accessor import get_env_config
+
+        if get_env_config().memory.fts_index_enabled:
+            try:
+                from src.memory.search_index import get_shared_index
+
+                get_shared_index().remove_entry(entry.id)
+            except Exception:
+                logger.debug("FTS5 remove_entry failed for %s", entry.title, exc_info=True)
+
+        if get_env_config().memory.links_enabled:
+            try:
+                from src.memory.semantic_links import SemanticLinker
+
+                SemanticLinker(self.memory_dir).remove_relations(entry.path)
+            except Exception:
+                logger.debug("Failed to remove relations for %s", entry.path, exc_info=True)
 
     def _append_gc_log(self, actions: list[dict], dry_run: bool) -> None:
         """Append GC decisions to gc.log."""
@@ -374,6 +405,26 @@ class MemoryLifecycle:
                 logger.warning(
                     "_write_compressed(%s) failed: %s", entry.title, exc
                 )
+                return
+
+        # The FTS row still holds the pre-compression body: without this,
+        # search ranking/snippets stay computed against text the entry no
+        # longer has, the same upsert PersistentMemory.add() does on write.
+        from src.config.accessor import get_env_config
+
+        if get_env_config().memory.fts_index_enabled:
+            try:
+                from src.memory.search_index import get_shared_index
+
+                get_shared_index().index_entry(
+                    entry_id=entry.id,
+                    title=entry.title,
+                    description=entry.description,
+                    keywords=" ".join(entry.keywords),
+                    body=compressed_body,
+                )
+            except Exception:
+                logger.debug("FTS5 index_entry failed for %s", entry.title, exc_info=True)
 
     def _update_frontmatter_field(self, path: Path, field: str, value: str) -> None:
         """Update a single frontmatter field in a memory file.

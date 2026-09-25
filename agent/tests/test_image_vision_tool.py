@@ -64,6 +64,7 @@ def test_happy_path_sends_data_url_and_returns_answer(tool, png_in_allowed_root)
     content = messages[0]["content"]
     assert content[0] == {"type": "text", "text": "What is this?"}
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    chat_cls.return_value.close.assert_called_once_with()
 
 
 def test_empty_model_answer_is_an_error(tool, png_in_allowed_root):
@@ -73,3 +74,13 @@ def test_empty_model_answer_is_an_error(tool, png_in_allowed_root):
         chat_cls.return_value.chat.return_value = response
         result = json.loads(tool.execute(path=str(png_in_allowed_root)))
     assert result["ok"] is False
+    chat_cls.return_value.close.assert_called_once_with()
+
+
+def test_provider_failure_closes_chat_client(tool, png_in_allowed_root):
+    with patch("src.providers.chat.ChatLLM") as chat_cls:
+        chat_cls.return_value.chat.side_effect = RuntimeError("provider unavailable")
+        result = json.loads(tool.execute(path=str(png_in_allowed_root)))
+
+    assert result["ok"] is False
+    chat_cls.return_value.close.assert_called_once_with()

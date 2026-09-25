@@ -25,6 +25,9 @@ from src.strategy_store.models import (
     BenchResult,
     DecaySignal,
     DecaySnapshot,
+    ModelTier,
+    ValidationStatus,
+    validate_validation_status_transition,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,6 +35,34 @@ from src.strategy_store.models import (
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DB_PATH = Path.home() / ".vibe-trading" / "strategy_store.db"
+
+# Schema version introduced by the model-governance migration (adds the
+# developer/owner/validator/approver/model_version/artifact_version/
+# model_tier/intended_use/limitations/validation_status/validation_date
+# columns to `artifacts`). Bumping PRAGMA user_version documents intent;
+# the migration itself is idempotent via a column-existence check so it is
+# safe to run unconditionally on every open regardless of the stamped
+# version (covers DBs that were hand-edited or partially migrated).
+# Schema version 3 adds ``derived_from`` on ``artifacts``.
+_SCHEMA_VERSION_ADAPTATION = 3
+_ADAPTATION_COLUMNS: dict[str, str] = {
+    "derived_from": "TEXT",
+}
+
+# column_name -> DDL type/default fragment used by ALTER TABLE ADD COLUMN.
+_GOVERNANCE_COLUMNS: dict[str, str] = {
+    "developer": "TEXT",
+    "owner": "TEXT",
+    "validator": "TEXT",
+    "approver": "TEXT",
+    "model_version": "TEXT",
+    "artifact_version": "TEXT",
+    "model_tier": "TEXT",
+    "intended_use": "TEXT",
+    "limitations": "TEXT",
+    "validation_status": "TEXT DEFAULT 'unvalidated'",
+    "validation_date": "TEXT",
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,10 +85,13 @@ def _json_dumps(value: object) -> str:
 
 
 def _json_loads(value: str | None, default: object) -> object:
-    """Deserialize a JSON string, returning *default* when empty."""
+    """Deserialize a JSON string, returning *default* when empty or corrupt."""
     if not value:
         return default
-    return json.loads(value)
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 def _default_db_path() -> Path:
@@ -143,6 +177,7 @@ class SqliteStrategyStore:
                     signal_engine_path TEXT,
                     run_dir         TEXT,
                     hypothesis_id   TEXT,
+                    derived_from    TEXT,
                     status          TEXT NOT NULL DEFAULT 'created'
                                     CHECK(status IN (
                                         'created','benching','active',
@@ -209,7 +244,25 @@ class SqliteStrategyStore:
             )
             if self._conn.execute("PRAGMA user_version").fetchone()[0] < 1:
                 self._conn.execute("PRAGMA user_version=1")
+            self._migrate_artifact_columns()
+            version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if version < _SCHEMA_VERSION_ADAPTATION:
+                self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION_ADAPTATION}")
             self._conn.commit()
+
+    def _migrate_artifact_columns(self) -> None:
+        """Add optional ``artifacts`` columns if missing.
+
+        Idempotent: checks ``PRAGMA table_info`` before each
+        ``ALTER TABLE ADD COLUMN``.
+        """
+        existing_columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(artifacts)")
+        }
+        extra = {**_GOVERNANCE_COLUMNS, **_ADAPTATION_COLUMNS}
+        for column, ddl in extra.items():
+            if column not in existing_columns:
+                self._conn.execute(f"ALTER TABLE artifacts ADD COLUMN {column} {ddl}")
 
     # -- Write transaction --------------------------------------------------
 
@@ -248,11 +301,27 @@ class SqliteStrategyStore:
             signal_engine_path=row["signal_engine_path"],
             run_dir=row["run_dir"],
             hypothesis_id=row["hypothesis_id"],
+            derived_from=row["derived_from"],
             status=ArtifactStatus(row["status"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             disabled_at=row["disabled_at"],
             disabled_reason=row["disabled_reason"],
+            developer=row["developer"],
+            owner=row["owner"],
+            validator=row["validator"],
+            approver=row["approver"],
+            model_version=row["model_version"],
+            artifact_version=row["artifact_version"],
+            model_tier=ModelTier(row["model_tier"]) if row["model_tier"] else None,
+            intended_use=row["intended_use"],
+            limitations=row["limitations"],
+            validation_status=(
+                ValidationStatus(row["validation_status"])
+                if row["validation_status"]
+                else ValidationStatus.UNVALIDATED
+            ),
+            validation_date=row["validation_date"],
         )
 
     @staticmethod
@@ -303,6 +372,13 @@ class SqliteStrategyStore:
     @_synchronized
     def register_artifact(self, artifact: Artifact) -> str:
         """Register a new artifact.  Returns the artifact_id."""
+        # A brand-new record has no prior validation history, so its implicit
+        # "current" state is UNVALIDATED — registering directly with
+        # validation_status=APPROVED would skip the VALIDATED step.
+        validate_validation_status_transition(
+            ValidationStatus.UNVALIDATED, artifact.validation_status
+        )
+
         now = _now_iso()
         artifact_id = artifact.id or _new_artifact_id()
         created_at = artifact.created_at or now
@@ -315,9 +391,13 @@ class SqliteStrategyStore:
                         id, type, name, source_paper, source_url, formula_latex,
                         theme, columns_required, decay_horizon, signal_definition,
                         entry_rules, exit_rules, position_sizing, universe,
-                        signal_engine_path, run_dir, hypothesis_id, status,
-                        created_at, updated_at, disabled_at, disabled_reason
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        signal_engine_path, run_dir, hypothesis_id, derived_from, status,
+                        created_at, updated_at, disabled_at, disabled_reason,
+                        developer, owner, validator, approver, model_version,
+                        artifact_version, model_tier, intended_use, limitations,
+                        validation_status, validation_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         artifact_id,
@@ -337,11 +417,23 @@ class SqliteStrategyStore:
                         artifact.signal_engine_path,
                         artifact.run_dir,
                         artifact.hypothesis_id,
+                        artifact.derived_from,
                         artifact.status.value,
                         created_at,
                         now,
                         artifact.disabled_at,
                         artifact.disabled_reason,
+                        artifact.developer,
+                        artifact.owner,
+                        artifact.validator,
+                        artifact.approver,
+                        artifact.model_version,
+                        artifact.artifact_version,
+                        artifact.model_tier.value if artifact.model_tier else None,
+                        artifact.intended_use,
+                        artifact.limitations,
+                        artifact.validation_status.value,
+                        artifact.validation_date,
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -389,7 +481,7 @@ class SqliteStrategyStore:
             where = "WHERE " + " AND ".join(clauses)
 
         rows = self._conn.execute(
-            f"SELECT * FROM artifacts {where} ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM artifacts {where} ORDER BY created_at DESC, rowid DESC LIMIT ?",
             [*params, limit],
         ).fetchall()
         return [self._row_to_artifact(row) for row in rows]
@@ -446,6 +538,12 @@ class SqliteStrategyStore:
         if existing is None:
             return None
 
+        # Structural enforcement of the validation state machine: an
+        # unvalidated model can never be updated straight into APPROVED.
+        validate_validation_status_transition(
+            existing.validation_status, artifact.validation_status
+        )
+
         now = _now_iso()
         with self._write_transaction():
             self._conn.execute(
@@ -456,8 +554,12 @@ class SqliteStrategyStore:
                     decay_horizon = ?, signal_definition = ?,
                     entry_rules = ?, exit_rules = ?, position_sizing = ?,
                     universe = ?, signal_engine_path = ?, run_dir = ?,
-                    hypothesis_id = ?, status = ?, updated_at = ?,
-                    disabled_at = ?, disabled_reason = ?
+                    hypothesis_id = ?, derived_from = ?, status = ?, updated_at = ?,
+                    disabled_at = ?, disabled_reason = ?,
+                    developer = ?, owner = ?, validator = ?, approver = ?,
+                    model_version = ?, artifact_version = ?, model_tier = ?,
+                    intended_use = ?, limitations = ?, validation_status = ?,
+                    validation_date = ?
                 WHERE id = ?
                 """,
                 (
@@ -477,10 +579,22 @@ class SqliteStrategyStore:
                     artifact.signal_engine_path,
                     artifact.run_dir,
                     artifact.hypothesis_id,
+                    artifact.derived_from,
                     artifact.status.value,
                     now,
                     artifact.disabled_at,
                     artifact.disabled_reason,
+                    artifact.developer,
+                    artifact.owner,
+                    artifact.validator,
+                    artifact.approver,
+                    artifact.model_version,
+                    artifact.artifact_version,
+                    artifact.model_tier.value if artifact.model_tier else None,
+                    artifact.intended_use,
+                    artifact.limitations,
+                    artifact.validation_status.value,
+                    artifact.validation_date,
                     artifact.id,
                 ),
             )
@@ -538,7 +652,7 @@ class SqliteStrategyStore:
             """
             SELECT * FROM bench_history
             WHERE artifact_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             (artifact_id, limit),
@@ -586,7 +700,7 @@ class SqliteStrategyStore:
             """
             SELECT * FROM decay_snapshots
             WHERE artifact_id = ?
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """,
             (artifact_id, limit),

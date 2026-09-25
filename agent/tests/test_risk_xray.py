@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from backtest.risk_xray import (
+    _drawdown,
     average_invested_weights,
     compute_risk_xray,
     render_risk_xray_markdown,
@@ -117,6 +118,24 @@ def test_max_drawdown_on_hand_built_curve():
     result = compute_risk_xray(closes, {"AAA": 1.0}, min_history=2)
     assert result["drawdown"]["max_drawdown"] == pytest.approx(-0.5)
     _assert_strict_json(result)
+
+
+def test_drawdown_uses_initial_wealth_before_first_return():
+    dates = pd.date_range("2026-01-02", periods=2, freq="D")
+
+    result = _drawdown(pd.Series([-0.2, 0.125], index=dates))
+
+    assert result["max_drawdown"] == pytest.approx(-0.2)
+    assert result["max_drawdown_start"] == str(dates[0])
+
+
+def test_drawdown_remains_negative_after_wealth_crosses_zero():
+    dates = pd.date_range("2026-01-02", periods=3, freq="D")
+
+    result = _drawdown(pd.Series([-1.2, 1.5, 1.0], index=dates))
+
+    assert result["max_drawdown"] == pytest.approx(-2.0)
+    assert result["max_drawdown_trough"] == str(dates[-1])
 
 
 def test_expected_shortfall_on_known_tail():
@@ -358,12 +377,140 @@ def test_run_backtest_emits_risk_xray_artifacts(tmp_path):
     assert out_json.exists() and out_md.exists()
     payload = json.loads(out_json.read_text(encoding="utf-8"))
     _assert_strict_json(payload)
-    # constant 1.0 signals normalize to an even two-name basket
-    assert payload["concentration"]["hhi"] == pytest.approx(0.5)
+    # The opening target is even, but actual weights drift with each symbol's
+    # realized price path; the x-ray must reflect execution truth, not preserve
+    # the optimizer's idealized 50/50 weights.
+    assert payload["concentration"]["hhi"] == pytest.approx(0.5010936725)
     assert set(payload["inputs"]["symbols"]) == {"AAA", "BBB"}
     assert "# Portfolio Risk X-Ray" in out_md.read_text(encoding="utf-8")
 
-    assert metrics["risk_xray_hhi"] == pytest.approx(0.5)
-    assert metrics["risk_xray_effective_n"] == pytest.approx(2.0)
+    assert metrics["risk_xray_hhi"] == pytest.approx(payload["concentration"]["hhi"])
+    assert metrics["risk_xray_effective_n"] == pytest.approx(payload["concentration"]["effective_n"])
     assert metrics["risk_xray_annualized_vol"] is not None
-    assert metrics["risk_xray_avg_invested"] == pytest.approx(39 / 40, abs=1e-6)
+    # Execution truth has two flat observations: the initial next-bar-open
+    # signal lag and the terminal liquidation.  The old target-frame report
+    # counted the latter as invested even though the position was closed.
+    assert metrics["risk_xray_avg_invested"] == pytest.approx(38 / 40, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Cross-market annualization: bars_per_year=None (#1237)
+# ---------------------------------------------------------------------------
+
+
+def test_periods_per_year_none_uses_calendar_day_annualization():
+    # The runner passes bars_per_year=None for cross-market baskets (its
+    # comment: "calendar-day annualization"). math.sqrt(None) used to crash
+    # every multi-market backtest; the annualized fields must stay defined
+    # with the 365 calendar-day factor.
+    # Zigzag closes so both positive and negative return observations exist
+    # (a monotonic-up fixture has an empty downside series and cannot exercise
+    # the second math.sqrt call).
+    idx = pd.date_range("2026-01-01", periods=60, freq="D")
+    closes = pd.DataFrame(
+        {
+            "AAA": pd.Series([100.0 + (i % 5) * 2.0 - 4.0 for i in range(60)], index=idx),
+            "BBB": pd.Series([50.0 + (i % 7) * 1.0 - 3.0 for i in range(60)], index=idx),
+        }
+    )
+    result = compute_risk_xray(
+        closes, {"AAA": 0.5, "BBB": 0.5}, min_history=10, periods_per_year=None
+    )
+    vol = result["volatility"]
+    assert vol["annualized_vol"] is not None
+    assert vol["downside_deviation_annualized"] is not None
+    port = (closes.pct_change().dropna() * pd.Series({"AAA": 0.5, "BBB": 0.5})).sum(axis=1)
+    # Span-derived convention (mirrors calc_metrics): effective bars per year
+    # from the observed calendar span — NOT a fixed 365.
+    first, last = port.index[0], port.index[-1]
+    years = (last - first).days / 365.25
+    bpy = int(len(port) / years)
+    assert vol["annualized_vol"] == pytest.approx(port.std(ddof=1) * bpy**0.5)
+    assert vol["downside_deviation_annualized"] == pytest.approx(
+        port[port < 0].std(ddof=1) * bpy**0.5
+    )
+    _assert_strict_json(result)
+
+
+def test_periods_per_year_explicit_keeps_explicit_factor():
+    closes = _closes({"AAA": list(range(100, 160)), "BBB": list(range(50, 110))})
+    result = compute_risk_xray(
+        closes, {"AAA": 0.5, "BBB": 0.5}, min_history=10, periods_per_year=252
+    )
+    vol = result["volatility"]
+    assert vol["annualized_vol"] == pytest.approx(vol["daily_vol"] * 252**0.5)
+
+
+def test_run_backtest_with_bars_per_year_none_does_not_crash(tmp_path):
+    # The full crash contract: engine.run_backtest(..., bars_per_year=None),
+    # which base.py forwards into compute_risk_xray (issue trace
+    # runner.py:1260 -> composite.py:150 -> base.py:860).
+    from backtest.engines.base import BaseEngine
+
+    class _FlatEngine(BaseEngine):
+        def can_execute(self, symbol, direction, bar):
+            return True
+
+        def round_size(self, raw_size, price):
+            return float(raw_size)
+
+        def calc_commission(self, size, price, direction, is_open):
+            return 0.0
+
+        def apply_slippage(self, price, direction):
+            return price
+
+    dates = pd.bdate_range("2026-01-05", periods=40)
+    data_map = {
+        "AAA": pd.DataFrame(
+            {"open": [100.0 + i for i in range(40)], "close": [100.0 + i for i in range(40)]},
+            index=dates,
+        ),
+        "BTC": pd.DataFrame(
+            {"open": [50.0 + 0.2 * i for i in range(40)], "close": [50.0 + 0.2 * i for i in range(40)]},
+            index=dates,
+        ),
+    }
+
+    class _Loader:
+        def fetch(self, codes, start_date, end_date, fields=None, interval="1D"):
+            return data_map
+
+    class _Signals:
+        def generate(self, data):
+            return {code: pd.Series(1.0, index=frame.index) for code, frame in data.items()}
+
+    engine = _FlatEngine({"initial_cash": 100_000.0})
+    metrics = engine.run_backtest(
+        {"codes": ["AAA", "BTC"], "start_date": "2026-01-05", "end_date": "2026-03-01"},
+        _Loader(),
+        _Signals(),
+        tmp_path,
+        bars_per_year=None,
+    )
+    assert metrics["risk_xray_annualized_vol"] is not None
+
+
+def test_long_window_requests_full_history_without_sampling():
+    """Over the shared 250-row cap the fetch would sample the series down and
+    break consecutive-return math; the tool must ask for every row (#1461)."""
+    import math
+
+    n = 300
+    prices = [100.0 + i * 0.1 for i in range(n)]
+    idx = pd.date_range("2026-01-01", periods=n, freq="D")
+
+    def capped_fetch(*, codes, start_date, end_date, source, interval, max_rows=250, **kwargs):
+        rows = [{"date": str(idx[i].date()), "close": price} for i, price in enumerate(prices)]
+        if max_rows and len(rows) > max_rows:
+            step = math.ceil(len(rows) / max_rows)
+            rows = rows[::step]
+        return {codes[0]: rows, "_unresolved": []}
+
+    tool = PortfolioRiskXrayTool(data_fetcher=capped_fetch)
+    payload = json.loads(tool.execute(symbols=["AAA"], interval="1D"))
+
+    assert payload["status"] == "ok"
+    assert payload["data"]["inputs"]["aligned_days"] == n
+    assert payload["data"]["inputs"]["return_observations"] == n - 1
+    _assert_strict_json(payload)

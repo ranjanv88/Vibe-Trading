@@ -265,6 +265,18 @@ export function applySwarmEvent(current: SwarmRunStatus, rawEvent: unknown): Swa
     }));
   }
 
+  if (type === "task_cancelled" || type === "worker_cancelled") {
+    // cancel_run() reached this worker mid-flight: a user stop, not a failure.
+    return updateAgent(current, { agentId, taskId }, (agent) => ({
+      ...agent,
+      status: "cancelled",
+      elapsed_s: agent.startedAt && eventTime
+        ? Math.max(0, (eventTime - agent.startedAt) / 1000)
+        : agent.elapsed_s,
+      iterations: asNumber(data.iterations) ?? agent.iterations,
+    }));
+  }
+
   if (type === "task_blocked") {
     const blockedBy = Array.isArray(data.blocked_by) ? data.blocked_by.join(", ") : asString(data.reason);
     return updateAgent(current, { agentId, taskId }, (agent) => ({

@@ -12,6 +12,7 @@ from typing import Any, Callable
 import pytest
 
 from src.providers.chat import LLMResponse, ToolCallRequest
+from tests.message_roles_helpers import assert_system_messages_only_lead
 
 
 class _ContentFilterLoopLLM:
@@ -33,6 +34,8 @@ class _ContentFilterLoopLLM:
         tools: list[Any] | None = None,
         on_text_chunk: Callable[[str], None] | None = None,
         on_reasoning_chunk: Callable[[str], None] | None = None,
+        timeout: int | None = None,
+        idle_timeout_s: float | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> LLMResponse:
         self.calls += 1
@@ -63,6 +66,8 @@ class _EmptyResponseLoopLLM:
         tools: list[Any] | None = None,
         on_text_chunk: Callable[[str], None] | None = None,
         on_reasoning_chunk: Callable[[str], None] | None = None,
+        timeout: int | None = None,
+        idle_timeout_s: float | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> LLMResponse:
         self.calls += 1
@@ -131,19 +136,22 @@ def test_content_filter_trace_entry(
 def test_content_filter_injects_system_message(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """System message is injected into messages after content filter hit."""
+    """Steering text is a user message with an inline <system> tag, never mid-conversation system."""
     llm = _ContentFilterLoopLLM(filter_count=1, final_content="Done.")
 
     _run(monkeypatch, tmp_path, llm)
 
     assert llm.calls == 2
     messages_on_second_call = llm.messages_history[1]
-    system_messages = [
+    steering = [
         m for m in messages_on_second_call
         if "content moderation" in str(m.get("content", ""))
     ]
-    assert len(system_messages) == 1
-    assert "[SYSTEM]" in system_messages[0]["content"]
+    assert len(steering) == 1
+    assert steering[0]["role"] == "user"
+    assert steering[0]["content"].startswith("<system>")
+    assert steering[0]["content"].endswith("</system>")
+    assert_system_messages_only_lead(llm.messages_history)
 
 
 def test_multiple_content_filter_hits(
@@ -163,23 +171,125 @@ def test_multiple_content_filter_hits(
     assert len(filter_entries) == 3
 
 
-def test_empty_content_no_filter_still_breaks(
+def test_empty_content_no_filter_retries_once_then_breaks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Empty content with content_filter_triggered=False triggers existing break."""
+    """A second consecutive empty response (no filter) still fails the run.
+
+    The first empty completion is retried with a nudge; only a second
+    consecutive empty response breaks the loop (transient provider empties
+    must not kill a run that has already done its work).
+    """
     llm = _EmptyResponseLoopLLM()
 
     result = _run(monkeypatch, tmp_path, llm)
 
     assert result["status"] == "failed"
     assert "empty_model_response" in result.get("reason", "")
-    assert llm.calls == 1
+    assert llm.calls == 2
 
     trace = _read_trace(result["run_dir"])
     empty_entries = [e for e in trace if e.get("type") == "empty_model_response"]
-    assert len(empty_entries) == 1
+    assert len(empty_entries) == 2
     filter_entries = [e for e in trace if e.get("type") == "content_filter_skipped"]
     assert len(filter_entries) == 0
+
+
+def test_single_empty_response_recovers_with_nudge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One transient empty response is retried with a nudge; the run succeeds."""
+    class _OneEmptyThenFinalLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.messages_history: list[list[dict[str, Any]]] = []
+
+        def stream_chat(
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[Any] | None = None,
+            on_text_chunk: Callable[[str], None] | None = None,
+            on_reasoning_chunk: Callable[[str], None] | None = None,
+            timeout: int | None = None,
+            idle_timeout_s: float | None = None,
+            should_cancel: Callable[[], bool] | None = None,
+        ) -> LLMResponse:
+            self.calls += 1
+            self.messages_history.append(list(messages))
+            if self.calls == 1:
+                return LLMResponse(content="", content_filter_triggered=False)
+            if on_text_chunk:
+                on_text_chunk("Finally.")
+            return LLMResponse(content="Finally.")
+
+        def chat(self, messages: list[dict[str, Any]], **_: Any) -> LLMResponse:
+            return LLMResponse(content="")
+
+    llm = _OneEmptyThenFinalLLM()
+    result = _run(monkeypatch, tmp_path, llm)
+
+    assert result["status"] == "success"
+    assert result["content"] == "Finally."
+    assert llm.calls == 2
+    system_msgs = [
+        m for m in llm.messages_history[1]
+        if "[SYSTEM]" in str(m.get("content", ""))
+        and "empty" in str(m.get("content", "")).casefold()
+    ]
+    assert len(system_msgs) == 1
+
+def test_auto_compact_summary_hard_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A hung compact-summary call is aborted by the wall-clock deadline.
+
+    Regression for the 2026-08-15 run where a slow-but-alive provider took
+    702s on one summary call: the httpx timeout only bounds time-between-bytes
+    and LangChain ignores a per-call config timeout, so without a hard
+    deadline the whole run stalls. The summary now runs in a daemon thread
+    joined with the LLM timeout; on expiry compaction degrades to truncation.
+    """
+    import time
+
+    import src.agent.loop as loop_module
+    from src.agent.loop import AgentLoop
+    from src.agent.tools import ToolRegistry
+    from src.agent.trace import TraceWriter
+
+    class _HangingSummaryLLM:
+        def __init__(self) -> None:
+            self.chat_calls = 0
+
+        def stream_chat(self, *args: Any, **kwargs: Any) -> LLMResponse:
+            return LLMResponse(content="")
+
+        def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> LLMResponse:
+            self.chat_calls += 1
+            time.sleep(2)  # simulate a provider stall
+            return LLMResponse(content="late summary")
+
+    llm = _HangingSummaryLLM()
+    agent = AgentLoop(registry=ToolRegistry(), llm=llm)
+    monkeypatch.setattr(loop_module, "LLM_TIMEOUT_SECONDS", 0.3, raising=False)
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1 " * 4000},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2 " * 4000},
+    ]
+    trace_dir = tmp_path / "compact_trace"
+    trace = TraceWriter(trace_dir)
+
+    start = time.monotonic()
+    agent._auto_compact(messages, trace_dir, trace, focus_topic="", iteration=1)
+    elapsed = time.monotonic() - start
+
+    assert llm.chat_calls == 1, "summary thread must have started"
+    assert elapsed < 3, f"wall-clock deadline did not fire: {elapsed:.1f}s"
+    reconstructed = " ".join(str(m.get("content", "")) for m in messages)
+    assert "compaction degraded" in reconstructed
 
 
 class _RatioFilterLoopLLM:
@@ -209,6 +319,8 @@ class _RatioFilterLoopLLM:
         tools: list[Any] | None = None,
         on_text_chunk: Callable[[str], None] | None = None,
         on_reasoning_chunk: Callable[[str], None] | None = None,
+        timeout: int | None = None,
+        idle_timeout_s: float | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> LLMResponse:
         self.calls += 1

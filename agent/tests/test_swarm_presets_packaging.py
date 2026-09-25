@@ -69,6 +69,55 @@ def test_known_presets_load(preset_name: str) -> None:
     assert data["agents"], f"{preset_name} has no agents"
 
 
+def test_quant_strategy_desk_ends_with_report_aggregator() -> None:
+    """quant_strategy_desk must deliver a final report, not stop at the risk audit.
+
+    Regression for #1029: the preset's last task is task-report run by
+    report_aggregator, consuming all four upstream task summaries.
+    """
+    data = load_preset("quant_strategy_desk")
+
+    agents = {a["id"]: a for a in data["agents"]}
+    assert "report_aggregator" in agents, "report_aggregator agent missing"
+
+    report_task = next(t for t in data["tasks"] if t["id"] == "task-report")
+    assert report_task["agent_id"] == "report_aggregator"
+    assert report_task["depends_on"] == [
+        "task-screen",
+        "task-factor",
+        "task-backtest",
+        "task-risk",
+    ]
+    assert report_task["input_from"] == {
+        "screener_result": "task-screen",
+        "factors": "task-factor",
+        "backtest_result": "task-backtest",
+        "risk_audit": "task-risk",
+    }
+
+
+def test_quant_strategy_desk_report_prompt_covers_four_sections() -> None:
+    """The aggregator prompt must require every deliverable a user expects."""
+    from src.swarm.presets import inspect_preset
+
+    data = load_preset("quant_strategy_desk")
+    prompt = next(
+        a["system_prompt"] for a in data["agents"] if a["id"] == "report_aggregator"
+    )
+    for marker in [
+        "Final strategy",
+        "Selected factors",
+        "Backtest summary",
+        "Risk audit",
+    ]:
+        assert marker in prompt, f"report prompt misses section {marker!r}"
+
+    insp = inspect_preset("quant_strategy_desk")
+    assert insp["valid"] is True, f"preset invalid: {insp['errors']}"
+    assert insp["errors"] == []
+    assert insp["layers"][-1][0]["task_id"] == "task-report"
+
+
 # ── User presets directory (~/.vibe-trading/swarm/presets/) ──────────────────
 
 
@@ -159,3 +208,48 @@ def test_explicit_user_preset_accepted_by_swarm_tool(user_presets_dir) -> None:
     assert _normalize_preset_name("no_such_preset_anywhere") is None
     # A user preset must never be reachable via keyword auto-routing.
     assert _match_preset("please analyze my custom desk topic") != "my_custom_desk"
+
+
+_INVESTMENT_COMMITTEE_FUNDAMENTAL_TOOLS = (
+    "get_financial_statements",
+    "get_fund_flow",
+    "get_margin_trading",
+    "get_research_reports",
+    "get_stock_news",
+)
+
+
+def test_investment_committee_research_workers_have_fundamental_tools() -> None:
+    """#1343: bull/bear/risk workers mandate fundamental analysis but their
+    whitelist lacked every fundamental data tool, so each run reported "no
+    fundamental data tool executable" and degraded to price-only claims."""
+    preset = load_preset("investment_committee")
+    researchers = {
+        agent["id"]: set(agent.get("tools") or [])
+        for agent in preset["agents"]
+        if agent["id"] in ("bull_advocate", "bear_advocate", "risk_officer")
+    }
+    assert researchers, "expected the three research workers"
+    for agent_id, tools in researchers.items():
+        missing = [
+            tool for tool in _INVESTMENT_COMMITTEE_FUNDAMENTAL_TOOLS if tool not in tools
+        ]
+        assert not missing, f"{agent_id} lacks fundamental data tools: {missing}"
+
+
+def test_every_preset_tool_exists_in_local_registry() -> None:
+    """A whitelist name the registry does not provide is silently dropped
+    (_filter_registry logs and skips), leaving the worker without a tool its
+    prompt may depend on. Every bundled preset tool must resolve."""
+    from src.tools import build_registry
+
+    registry = build_registry(include_shell_tools=True)
+    for entry in list_presets():
+        preset = load_preset(entry["name"])
+        for agent in preset["agents"]:
+            for tool_name in agent.get("tools") or []:
+                assert registry.get(tool_name), (
+                    f"{entry['name']}/{agent['id']} requests tool {tool_name!r} "
+                    "that the local registry does not provide; the worker "
+                    "whitelist would silently drop it (#1343)."
+                )

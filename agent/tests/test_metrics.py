@@ -427,6 +427,32 @@ class TestCalcMetrics:
         if m["annual_return"] > 0:
             assert m["calmar"] > 0
 
+    def test_calmar_and_drawdown_negative_equity(self) -> None:
+        """An all-negative curve uses initial cash as its high-water mark."""
+        dates = pd.bdate_range("2025-01-01", periods=3)
+        eq = pd.Series([-20.0, -50.0, -100.0], index=dates)
+        m = calc_metrics(eq, [], 100.0, 252)
+        assert m["max_drawdown"] == pytest.approx(-2.0)
+        assert m["calmar"] < 0
+
+    def test_drawdown_includes_first_bar_loss_from_initial_cash(self) -> None:
+        """The first observed equity point is not automatically a new peak."""
+        dates = pd.bdate_range("2025-01-01", periods=2)
+        eq = pd.Series([80.0, 90.0], index=dates)
+
+        m = calc_metrics(eq, [], 100.0, 252)
+
+        assert m["max_drawdown"] == pytest.approx(-0.2)
+
+    def test_drawdown_remains_defined_after_equity_crosses_zero(self) -> None:
+        """A positive high-water mark keeps zero-crossing losses meaningful."""
+        dates = pd.bdate_range("2025-01-01", periods=3)
+        eq = pd.Series([120.0, 0.0, -20.0], index=dates)
+
+        m = calc_metrics(eq, [], 100.0, 252)
+
+        assert m["max_drawdown"] == pytest.approx(-140.0 / 120.0)
+
     def test_zero_final_equity(self) -> None:
         """A full wipeout (equity reaches 0) annualises to -100%, not a crash."""
         dates = pd.bdate_range("2025-01-01", periods=252)

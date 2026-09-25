@@ -142,3 +142,87 @@ class TestOptionsChainErrors:
         assert payload["ok"] is False
         assert "yahoo options request failed" in payload["error"]
         assert "429" in payload["error"]
+
+
+class TestExplicitExpirationValidation:
+    """An explicit ``expiration`` must match what Yahoo actually returned.
+
+    Yahoo answers a ``date`` it does not list with the default (nearest)
+    chain, so before this validation a wrong-cycle date came back as
+    ``ok: true`` with another expiration's contracts — or zero contracts —
+    and nothing in the envelope said so.
+    """
+
+    def test_explicit_valid_expiration_passes_validation(self):
+        with patch.object(oc.yahoo_client, "get_options", return_value=_sample_result()):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["data"]["expiration"] == 1750000000
+        assert payload["data"]["calls_count"] == 1
+        assert payload["data"]["puts_count"] == 1
+
+    def test_invalid_expiration_returns_error_with_available_dates(self):
+        with patch.object(oc.yahoo_client, "get_options", return_value=_sample_result()):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=9999999999)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "not among the available" in payload["error"]
+        assert "1750000000" in payload["error"]
+
+    def test_explicit_expiration_without_expiration_dates_is_malformed(self):
+        result_no_dates = {"options": [{"expirationDate": 1750000000, "calls": [], "puts": []}]}
+        with patch.object(oc.yahoo_client, "get_options", return_value=result_no_dates):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "malformed" in payload["error"].lower()
+
+    def test_expiration_dates_not_a_list_is_malformed(self):
+        malformed = {"expirationDates": "not-a-list", "options": []}
+        with patch.object(oc.yahoo_client, "get_options", return_value=malformed):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "malformed" in payload["error"].lower()
+
+    def test_listed_expiration_with_empty_options_is_an_error(self):
+        """Listed date but no chain block: an error, not ok:true with 0 contracts."""
+        no_options = {"expirationDates": [1750000000], "options": []}
+        with patch.object(oc.yahoo_client, "get_options", return_value=no_options):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "no option chain" in payload["error"].lower()
+        assert "1750000000" in payload["error"]
+
+    def test_block_expiration_mismatch_is_an_error(self):
+        mismatch = {
+            "expirationDates": [1750000000, 1750604800],
+            "options": [{"expirationDate": 1750604800, "calls": [], "puts": []}],
+        }
+        with patch.object(oc.yahoo_client, "get_options", return_value=mismatch):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "did not match" in payload["error"]
+        assert "1750604800" in payload["error"]
+
+    def test_non_dict_options_block_is_malformed_not_a_crash(self):
+        malformed = {
+            "expirationDates": [1750000000],
+            "options": [None, {"expirationDate": 1750000000, "calls": [], "puts": []}],
+        }
+        with patch.object(oc.yahoo_client, "get_options", return_value=malformed):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US", expiration=1750000000)
+        payload = json.loads(out)
+        assert payload["ok"] is False
+        assert "malformed" in payload["error"].lower()
+
+    def test_omitted_expiration_is_not_validated(self):
+        """No expiration → nearest chain, passthrough; an empty result stays ok."""
+        with patch.object(oc.yahoo_client, "get_options", return_value={"expirationDates": [], "options": []}):
+            out = oc.OptionsChainTool().execute(ticker="AAPL.US")
+        payload = json.loads(out)
+        assert payload["ok"] is True
+        assert payload["data"]["calls_count"] == 0

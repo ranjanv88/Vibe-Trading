@@ -50,14 +50,48 @@ def test_remote_call_requires_cached_oauth(monkeypatch: pytest.MonkeyPatch) -> N
     assert "connector authorize robinhood-live-mcp" in result["error"]
 
 
-def test_ibkr_official_profile_does_not_advertise_unknown_generic_reads() -> None:
-    """IBKR official MCP stays honest until stable remote tool names are known."""
+def test_ibkr_official_profile_advertises_verified_portfolio_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real-account-verified IBKR tools back the shared read interface."""
     profile = profiles.profile_by_id("ibkr-live-official-mcp-readonly")
+    calls: list[tuple[str, dict]] = []
+    server = SimpleNamespace(
+        url="https://api.ibkr.com/v1/api/mcp-public",
+        enabled_tools=["get_account_summary", "get_account_positions"],
+        auth=SimpleNamespace(cache_dir="/tmp/vibe-token"),
+    )
 
-    assert profile.capabilities == ("mcp.read.discovery",)
-    result = service.get_account(profile.id)
-    assert result["status"] == "error"
-    assert "does not support" in result["error"]
+    class _Adapter:
+        def __init__(self, server_name, server_config):  # noqa: ANN001
+            assert server_name == "ibkr"
+            assert server_config is server
+
+        def call_tool(self, remote_name, arguments):  # noqa: ANN001
+            calls.append((remote_name, dict(arguments)))
+            return {
+                "status": "ok",
+                "structured_content": (
+                    {"currency": "USD", "net_liquidation": 100}
+                    if remote_name == "get_account_summary"
+                    else {"positions": []}
+                ),
+            }
+
+    monkeypatch.setattr(
+        "src.config.loader.load_agent_config",
+        lambda: SimpleNamespace(mcp_servers={"ibkr": server}),
+    )
+    monkeypatch.setattr("src.live.registry.has_cached_oauth_token", lambda *_: True)
+    monkeypatch.setattr("src.tools.mcp.MCPServerAdapter", _Adapter)
+
+    assert profile.capabilities == ("account.read", "positions.read")
+    assert service.get_account(profile.id)["summary"][0]["tag"] == "NetLiquidation"
+    assert service.get_positions(profile.id)["positions"] == []
+    assert calls == [
+        ("get_account_summary", {}),
+        ("get_account_positions", {}),
+    ]
 
 
 def test_connector_profile_id_for_broker_prefers_live_remote_mcp() -> None:

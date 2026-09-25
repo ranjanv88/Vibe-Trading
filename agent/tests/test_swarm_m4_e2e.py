@@ -143,6 +143,9 @@ class _StubChatLLM:
     def chat(self, messages, tools=None, timeout=None):  # pragma: no cover — fallback path
         return self.stream_chat(messages, tools=tools)
 
+    def close(self) -> None:
+        """No-op: the stub owns no HTTP client."""
+
 
 def _stub_llm_factory(responses: list[LLMResponse]):
     """Build a callable that reads as ``ChatLLM(model_name=...)`` would.
@@ -271,7 +274,7 @@ def test_run_worker_uses_remote_mcp_tool_and_report_cites_canned_data(
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names,
                 remote_tools,
                 include_shell_tools=include_shell_tools,
@@ -355,7 +358,7 @@ def test_two_agents_with_distinct_servers_only_see_their_own_remote_tools(
         with (
             patch(
                 "src.swarm.worker.build_swarm_registry",
-                wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+                wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                     tool_names, remote_tools, include_shell_tools=include_shell_tools,
                 ),
             ),
@@ -450,7 +453,7 @@ def test_tool_call_events_carry_mcp_metadata_and_redact_sensitive_arguments(
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names, remote_tools, include_shell_tools=include_shell_tools,
             ),
         ),
@@ -540,7 +543,7 @@ def test_remote_tool_transport_failure_does_not_crash_worker(tmp_path: Path) -> 
     with (
         patch(
             "src.swarm.worker.build_swarm_registry",
-            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False: _registry_with_remote(
+            wraps=lambda tool_names, *, agent_config=None, include_shell_tools=False, skill_allowlist=None: _registry_with_remote(
                 tool_names, remote_tools, include_shell_tools=include_shell_tools,
             ),
         ),

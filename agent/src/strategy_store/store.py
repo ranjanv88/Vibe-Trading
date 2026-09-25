@@ -28,6 +28,8 @@ from src.strategy_store.models import (
     BenchResult,
     DecaySnapshot,
     DecaySignal,
+    ValidationStatus,
+    validate_validation_status_transition,
 )
 
 
@@ -168,6 +170,12 @@ class InMemoryStrategyStore:
                     f"artifact '{artifact.name}' already exists in "
                     f"universe '{artifact.universe}'"
                 )
+        # A brand-new record has no prior validation history, so its implicit
+        # "current" state is UNVALIDATED — registering directly with
+        # validation_status=APPROVED would skip the VALIDATED step.
+        validate_validation_status_transition(
+            ValidationStatus.UNVALIDATED, artifact.validation_status
+        )
         now = _now_iso()
         artifact_id = artifact.id or _new_artifact_id()
         stored = replace(
@@ -194,19 +202,23 @@ class InMemoryStrategyStore:
         limit: int = 100,
     ) -> Sequence[Artifact]:
         """List artifacts with composable filters, newest first."""
-        results: list[Artifact] = []
-        for art in self._artifacts.values():
+        results: list[tuple[int, Artifact]] = []
+        for position, art in enumerate(self._artifacts.values()):
             if type is not None and art.type != type:
                 continue
             if status is not None and art.status != status:
                 continue
             if universe is not None and art.universe != universe:
                 continue
-            results.append(art)
+            results.append((position, art))
 
-        # Sort by created_at descending (newest first).
-        results.sort(key=lambda a: a.created_at or "", reverse=True)
-        return results[:limit]
+        # Sort by created_at descending (newest first), breaking ties on
+        # insertion order. Sorting is stable and reverse=True does not reorder
+        # equal keys, so without the tiebreaker records sharing a timestamp
+        # come back oldest first. Timestamps collide readily: _now_iso() has
+        # only the clock's resolution behind it.
+        results.sort(key=lambda pair: (pair[1].created_at or "", pair[0]), reverse=True)
+        return [art for _, art in results[:limit]]
 
     @_synchronized
     def update_status(
@@ -251,8 +263,15 @@ class InMemoryStrategyStore:
 
         Returns the updated artifact, or ``None`` if the ID is not found.
         """
-        if artifact.id not in self._artifacts:
+        existing = self._artifacts.get(artifact.id)
+        if existing is None:
             return None
+
+        # Structural enforcement of the validation state machine: an
+        # unvalidated model can never be updated straight into APPROVED.
+        validate_validation_status_transition(
+            existing.validation_status, artifact.validation_status
+        )
 
         now = _now_iso()
         stored = replace(artifact, updated_at=now)
@@ -284,7 +303,8 @@ class InMemoryStrategyStore:
     ) -> Sequence[BenchResult]:
         """Return bench results for an artifact, newest first."""
         matched = [r for r in self._bench_results if r.artifact_id == artifact_id]
-        matched.sort(key=lambda r: r.created_at or "", reverse=True)
+        # id ascends with insertion, so it breaks timestamp ties newest first.
+        matched.sort(key=lambda r: (r.created_at or "", r.id or 0), reverse=True)
         return matched[:limit]
 
     # -- Decay snapshots -----------------------------------------------------
@@ -312,5 +332,6 @@ class InMemoryStrategyStore:
     ) -> Sequence[DecaySnapshot]:
         """Return decay snapshots for an artifact, newest first."""
         matched = [s for s in self._decay_snapshots if s.artifact_id == artifact_id]
-        matched.sort(key=lambda s: s.created_at or "", reverse=True)
+        # id ascends with insertion, so it breaks timestamp ties newest first.
+        matched.sort(key=lambda s: (s.created_at or "", s.id or 0), reverse=True)
         return matched[:limit]

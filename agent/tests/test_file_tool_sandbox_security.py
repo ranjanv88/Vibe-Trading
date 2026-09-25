@@ -77,6 +77,35 @@ def test_read_and_edit_file_accept_configured_run_root(tmp_path: Path, monkeypat
     assert target.read_text(encoding="utf-8") == "alpha gamma"
 
 
+def test_read_file_skill_prefix_is_not_shadowed_by_run_dir(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`skills/` binds to the bundled skills root, never to a run_dir decoy."""
+    monkeypatch.setenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", str(tmp_path))
+    decoy = tmp_path / "skills" / "data-routing" / "SKILL.md"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("DECOY CONTENT", encoding="utf-8")
+
+    body = _body(
+        ReadFileTool().execute(path="skills/data-routing/SKILL.md", run_dir=str(tmp_path))
+    )
+
+    assert body["status"] == "ok"
+    assert "DECOY CONTENT" not in body["content"]
+    assert "data-routing" in body["content"]
+
+
+def test_read_file_skill_prefix_cannot_escape_skills_root() -> None:
+    """Traversal out of the skills namespace must be rejected, not redirected.
+
+    Binding the prefix to one root would be worthless if `skills/../x` walked
+    back out of it.
+    """
+    body = _body(ReadFileTool().execute(path="skills/../agent.json"))
+
+    assert body["status"] == "error"
+
+
 def test_backtest_rejects_unconfigured_absolute_run_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("VIBE_TRADING_ALLOWED_RUN_ROOTS", raising=False)
     (tmp_path / "code").mkdir()

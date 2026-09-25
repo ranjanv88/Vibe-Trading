@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CalendarClock, Loader2, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -87,6 +87,10 @@ export function Scheduled() {
   const [days, setDays] = useState<DaysChoice>("weekdays");
   const [advanced, setAdvanced] = useState("");
   const [timezone, setTimezone] = useState(() => browserTimezone());
+  // Delivery is opt-in: an empty channel is what every monitor had before, and
+  // it means the briefing stays in the app.
+  const [deliveryChannel, setDeliveryChannel] = useState("");
+  const [deliveryTarget, setDeliveryTarget] = useState("");
   const [saving, setSaving] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
 
@@ -159,7 +163,19 @@ export function Scheduled() {
     }
     setSaving(true);
     try {
-      await api.createScheduledRun({ prompt: prompt.trim(), schedule, timezone });
+      const channel = deliveryChannel.trim();
+      const target = deliveryTarget.trim();
+      if (channel && !target) {
+        setComposerError(t("scheduled.deliveryTargetRequired"));
+        return;
+      }
+      await api.createScheduledRun({
+        prompt: prompt.trim(),
+        schedule,
+        timezone,
+        delivery_channel: channel || null,
+        delivery_target: channel ? target : null,
+      });
       setPrompt("");
       await refresh();
     } catch (error) {
@@ -196,6 +212,53 @@ export function Scheduled() {
     }
   }
 
+  function verdictCell(run: ScheduledRun): ReactNode {
+    const verdict = run.last_verdict;
+    if (verdict === null) {
+      return (
+        <p className={hintClass} data-testid={`verdict-empty-${run.id}`}>
+          {t("scheduled.verdictEmpty")}
+        </p>
+      );
+    }
+    // A monitor built from an ad-hoc prompt never produces a verdict section,
+    // and that is its correct permanent state: render nothing, not a warning.
+    if (verdict.parse === "no_verdict_section") {
+      return null;
+    }
+    if (verdict.parse === "contract_violation") {
+      // Never show a wrong verdict: the malformed run reads as unreadable, and
+      // the prior good one is still visible through `previous` next release.
+      return (
+        <p className={hintClass} data-testid={`verdict-unreadable-${run.id}`}>
+          {t("scheduled.verdictUnreadable")}
+        </p>
+      );
+    }
+    const when = formatInZone(verdict.recorded_at, displayZone(run), locale);
+    if (verdict.items.length === 0) {
+      return (
+        <p className={hintClass} data-testid={`verdict-nocalls-${run.id}`}>
+          {t("scheduled.verdictNoCalls")} · {t("scheduled.verdictRecorded", { when })}
+        </p>
+      );
+    }
+    const delta =
+      verdict.previous && verdict.previous.outcome !== verdict.outcome
+        ? t("scheduled.verdictDelta", { was: verdict.previous.outcome, now: verdict.outcome })
+        : null;
+    return (
+      <p className="break-words text-xs text-muted-foreground" data-testid={`verdict-line-${run.id}`}>
+        <span className="font-medium text-foreground">
+          {verdict.items.map((item) => `${item.symbol} ${item.state}`).join(" · ")}
+        </span>
+        {" · "}
+        {delta ? <span>{delta} · </span> : null}
+        {t("scheduled.verdictRecorded", { when })}
+      </p>
+    );
+  }
+
   function statusLabel(run: ScheduledRun): { label: string; tone: "success" | "danger" | "warning" | "neutral" } {
     switch (run.status) {
       case "completed":
@@ -206,6 +269,8 @@ export function Scheduled() {
         return { label: t("scheduled.statusRunning"), tone: "warning" };
       case "cancelled":
         return { label: t("scheduled.statusCancelled"), tone: "neutral" };
+      case "expired":
+        return { label: t("scheduled.statusExpired", { defaultValue: "Expired" }), tone: "neutral" };
       default:
         return { label: t("scheduled.statusPending"), tone: "neutral" };
     }
@@ -319,6 +384,34 @@ export function Scheduled() {
           </div>
         </div>
 
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label htmlFor="scheduled-delivery-channel" className={labelClass}>
+              {t("scheduled.deliveryChannelLabel")}
+            </label>
+            <input
+              id="scheduled-delivery-channel"
+              value={deliveryChannel}
+              onChange={(e) => setDeliveryChannel(e.target.value)}
+              placeholder={t("scheduled.deliveryChannelPlaceholder")}
+              className={fieldClass}
+            />
+            <p className={hintClass}>{t("scheduled.deliveryHint")}</p>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="scheduled-delivery-target" className={labelClass}>
+              {t("scheduled.deliveryTargetLabel")}
+            </label>
+            <input
+              id="scheduled-delivery-target"
+              value={deliveryTarget}
+              onChange={(e) => setDeliveryTarget(e.target.value)}
+              placeholder={t("scheduled.deliveryTargetPlaceholder")}
+              className={fieldClass}
+            />
+          </div>
+        </div>
+
         {composerError && (
           <p role="alert" className="text-sm text-danger">
             {composerError}
@@ -372,21 +465,52 @@ export function Scheduled() {
                 <li key={run.id} className="flex flex-wrap items-start gap-3 p-4">
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
+                      {run.title && <span className="font-semibold">{run.title}</span>}
                       <span className="font-medium">{cadenceLabel(run)}</span>
                       <span className={hintClass}>{zone}</span>
                       <StatusPill label={status.label} tone={status.tone} />
                     </div>
                     <p className="truncate text-sm text-muted-foreground">{run.prompt}</p>
                     <p className={hintClass}>
-                      {t("scheduled.nextRun", {
-                        when: formatInZone(run.next_run_at, zone, locale),
-                      })}
+                      {run.status === "expired"
+                        ? t("scheduled.noFurtherRuns", { defaultValue: "No further runs" })
+                        : t("scheduled.nextRun", {
+                            when: formatInZone(run.next_run_at, zone, locale),
+                          })}
                     </p>
+                    {run.end_at && (
+                      <p className={hintClass}>
+                        {t("scheduled.endsAt", {
+                          defaultValue: "Ends {{when}}",
+                          when: formatInZone(run.end_at, zone, locale),
+                        })}
+                      </p>
+                    )}
                     {run.last_error && (
                       <p className="break-words text-xs text-danger">
                         {t("scheduled.lastError", { error: run.last_error })}
                       </p>
                     )}
+                    {run.delivery_channel && (
+                      <p
+                        className={
+                          run.delivery_status === "failed"
+                            ? "break-words text-xs text-danger"
+                            : hintClass
+                        }
+                      >
+                        {t(`scheduled.delivery_${run.delivery_status}`, {
+                          channel: run.delivery_channel,
+                          defaultValue: t("scheduled.delivery_none", {
+                            channel: run.delivery_channel,
+                          }),
+                        })}
+                        {run.delivery_status === "failed" && run.delivery_error
+                          ? ` — ${run.delivery_error}`
+                          : ""}
+                      </p>
+                    )}
+                    {verdictCell(run)}
                   </div>
                   {pendingDelete === run.id ? (
                     <div className="flex items-center gap-1.5">

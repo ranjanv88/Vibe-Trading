@@ -36,6 +36,23 @@ def _literal_assignment(path: Path, name: str) -> object:
     raise AssertionError(f"{name} not found in {path}")
 
 
+def _live_mcp_tool_count() -> int:
+    """Return how many tools the MCP server actually serves.
+
+    Returns:
+        Length of ``mcp.list_tools()`` — decorator-registered wrappers plus
+        every mirrored tool.
+    """
+    import asyncio
+    import sys
+
+    if str(AGENT_ROOT) not in sys.path:
+        sys.path.insert(0, str(AGENT_ROOT))
+    import mcp_server
+
+    return len(asyncio.run(mcp_server.mcp.list_tools()))
+
+
 def _assert_all_counts(pattern: str, expected: int) -> None:
     counts = [
         int(value)
@@ -93,10 +110,38 @@ def test_market_data_source_count_matches_loader_registry() -> None:
 
 
 def test_mcp_tool_heading_matches_registered_tools() -> None:
-    registered = len(
-        re.findall(
-            r"(?m)^@mcp\.tool(?:\(\))?\s*$",
-            MCP_SERVER_PATH.read_text(encoding="utf-8"),
-        )
+    """The manifest heading must match the tools the server actually serves.
+
+    Counting ``@mcp.tool`` decorators counts only the hand-written wrappers and
+    silently ignores every tool registered through ``_MIRRORED_TOOL_SOURCES``.
+    That proxy is what let the heading sit at 60 while the surface served 64:
+    the four institutional-research tools were absent from the published
+    manifest and no test could see it. Ask the server.
+    """
+    _assert_all_counts(r"Available MCP Tools\s*\((\d+)\)", _live_mcp_tool_count())
+
+
+def test_manifest_python_requirement_matches_pyproject() -> None:
+    """The manifest's declared Python range must be the packaged one.
+
+    ``SKILL.md`` is a distribution manifest: consumers read the ``python:``
+    field to decide whether the package is installable. Nothing else compared
+    it against ``pyproject.toml``, so when the ``<3.14`` upper bound was
+    dropped from packaging the manifest silently kept advertising it.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads(
+        (AGENT_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
     )
-    _assert_all_counts(r"Available MCP Tools\s*\((\d+)\)", registered)
+    packaged = pyproject["project"]["requires-python"].replace(" ", "")
+    declared = re.search(
+        r'^\s*python:\s*"([^"]+)"', MANIFEST_PATH.read_text(encoding="utf-8"), re.M
+    )
+    assert declared is not None, "SKILL.md declares no python requirement"
+    assert set(declared.group(1).replace(" ", "").split(",")) == set(
+        packaged.split(",")
+    ), (
+        f"SKILL.md says python {declared.group(1)!r} but pyproject.toml "
+        f"requires {packaged!r}"
+    )

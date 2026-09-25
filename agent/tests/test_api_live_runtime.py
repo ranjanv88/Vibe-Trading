@@ -19,7 +19,10 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 import api_server
+from tests import robinhood_mcp_helpers as rh
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -351,6 +354,7 @@ def test_build_live_runner_wires_a_real_runner(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(api_server, "_live_broker_adapter", lambda broker: _StubAdapter())
     monkeypatch.setattr(api_server, "_get_session_service", lambda: _StubSvc())
+    monkeypatch.setattr(api_server, "_mandate_account_ref", lambda broker: "5QR00001")
 
     runner = api_server._build_live_runner("robinhood")
     # Constructs without TypeError and exposes the R2 contract.
@@ -425,13 +429,18 @@ def test_live_action_relay_ignores_non_live_results(tmp_path: Path, monkeypatch)
 
 
 def test_fetch_broker_ceilings_derives_from_account(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
     class _StubAdapter:
         def call_tool(self, name, args):
-            assert name == "get_portfolio"
-            return {"status": "ok", "result": {"buying_power": 4200.0}}
+            calls.append((name, args))
+            return rh.portfolio(total_value="9000.00", cash="1000.00", buying_power="4200.00")
 
     monkeypatch.setattr(api_server, "_live_broker_adapter", lambda broker: _StubAdapter())
-    ceilings = api_server._fetch_broker_ceilings("robinhood")
+    ceilings = api_server._fetch_broker_ceilings("robinhood", "5QR00001")
+    # The read is scoped to the account being bound, and the value comes from
+    # Robinhood's nested buying_power.buying_power, not a top-level key.
+    assert calls == [("get_portfolio", {"account_number": "5QR00001"})]
     assert ceilings == {
         "account_funding_usd": 4200.0,
         "max_order_notional_usd": 4200.0,
@@ -446,3 +455,85 @@ def test_fetch_broker_ceilings_falls_back_to_none(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(api_server, "_live_broker_adapter", _unavail)
     assert api_server._fetch_broker_ceilings("robinhood") is None
+
+
+def test_build_live_runner_reads_normalize_adapter_payloads(tmp_path, monkeypatch) -> None:
+    # The halt-sweep + reconcile reads must receive broker RECORDS, not the
+    # adapter's {status: ok, data: ...} envelope — a successful positions
+    # read must decode into the records list, not be rejected as a dict.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path), raising=False)
+    monkeypatch.setattr(api_server, "_runner_factory", None, raising=False)
+
+    class _StubAdapter:
+        def __init__(self):
+            self.calls: list[tuple[str, dict]] = []
+
+        def call_tool(self, name, args):
+            self.calls.append((name, args))
+            if name.endswith("positions"):
+                return rh.positions([rh.position("NVDA", "3")])
+            if name.endswith("orders"):
+                return rh.envelope("get_equity_orders", {"orders": [{"order_id": "o1"}]})
+            if name.endswith("portfolio"):
+                return rh.portfolio(buying_power="4200.00")
+            raise AssertionError(f"unexpected tool {name}")
+
+    class _StubSvc:
+        session_id = "live-sess-2"
+        event_bus = SimpleNamespace(emit=lambda *a, **k: None)
+
+        def create_session(self, title=""):
+            return self
+
+        async def send_message(self, sid, content, **kw):
+            return {"message_id": "m1", "attempt_id": "a1"}
+
+    adapter = _StubAdapter()
+    monkeypatch.setattr(api_server, "_live_broker_adapter", lambda broker: adapter)
+    monkeypatch.setattr(api_server, "_get_session_service", lambda: _StubSvc())
+    monkeypatch.setattr(api_server, "_mandate_account_ref", lambda broker: "5QR00001")
+
+    runner = api_server._build_live_runner("robinhood")
+    assert runner._read_positions() == [
+        {"symbol": "NVDA", "quantity": "3", "average_cost": "100.00", "broker_type": "unobserved", "qty": "3"}
+    ]
+    assert runner._read_open_orders() == [{"order_id": "o1"}]
+    assert runner._read_balance()["buying_power"] == "4200.00"
+    assert {args.get("account_number") for _, args in adapter.calls} == {"5QR00001"}
+
+
+def test_build_live_runner_read_error_envelope_raises(tmp_path, monkeypatch) -> None:
+    # An error envelope at the boundary must raise (fail-closed: reconcile
+    # ticks error, the sweep records a structured read error) — never be
+    # consumed as an empty/mangled record list.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path), raising=False)
+    monkeypatch.setattr(api_server, "_runner_factory", None, raising=False)
+
+    class _StubAdapter:
+        def call_tool(self, name, args):
+            return {
+                "status": "error",
+                "server": "robinhood",
+                "remote_tool": name,
+                "tool": name,
+                "error": "connection reset while reading positions",
+                "error_type": "ConnectionError",
+            }
+
+    class _StubSvc:
+        session_id = "live-sess-3"
+        event_bus = SimpleNamespace(emit=lambda *a, **k: None)
+
+        def create_session(self, title=""):
+            return self
+
+        async def send_message(self, sid, content, **kw):
+            return {"message_id": "m1", "attempt_id": "a1"}
+
+    monkeypatch.setattr(api_server, "_live_broker_adapter", lambda broker: _StubAdapter())
+    monkeypatch.setattr(api_server, "_get_session_service", lambda: _StubSvc())
+    monkeypatch.setattr(api_server, "_mandate_account_ref", lambda broker: "5QR00001")
+
+    runner = api_server._build_live_runner("robinhood")
+    with pytest.raises(RuntimeError, match="connection reset while reading positions"):
+        runner._read_positions()

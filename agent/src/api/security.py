@@ -17,6 +17,8 @@ from fastapi import HTTPException, Query, Request, Security, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from src.session.models import AuthMethod, Principal
+
 from src.api._compat import host_attr as _host_attr
 from src.config.accessor import get_env_config
 
@@ -181,12 +183,16 @@ _PERMISSIONS_POLICY = (
     "magnetometer=(), gyroscope=(), accelerometer=()"
 )
 
-# Report-Only first: a later switch to enforcing mode can be validated against
-# real traffic without risking a broken app. Scoped to what the built SPA needs:
-# same-origin scripts/styles/fonts/img plus same-origin fetch & EventSource.
-# Inline styles are allowed because ECharts and React ``style={}`` props set
-# them; fonts are self-hosted (@fontsource) so no external font host is listed.
-_CSP_REPORT_ONLY = (
+# Enforced by default. Scoped to what the built SPA needs: same-origin
+# scripts/styles/fonts/img plus same-origin fetch & EventSource. Inline styles
+# are allowed because ECharts and React ``style={}`` props set them; fonts are
+# self-hosted (@fontsource) so no external font host is listed. The SPA entry is
+# an external module script and ``lib/api.ts`` fetches a same-origin base, so
+# no inline-script or cross-origin-connect allowance is needed.
+#
+# Set ``VIBE_TRADING_CSP_REPORT_ONLY=1`` to ship this Report-Only instead --
+# a rollback switch for deployments serving assets this policy does not cover.
+_CSP_POLICY = (
     "default-src 'self'; "
     "script-src 'self'; "
     "style-src 'self' 'unsafe-inline'; "
@@ -197,6 +203,33 @@ _CSP_REPORT_ONLY = (
     "base-uri 'self'; "
     "form-action 'self'"
 )
+
+# Swagger UI and ReDoc load their bundle and stylesheet from jsdelivr and run a
+# bootstrap block that FastAPI's ``get_swagger_ui_html`` / ``get_redoc_html``
+# hardcode inline, so the strict policy above would leave both pages blank.
+# Both routes require auth and render only the OpenAPI schema, so they get a
+# narrowly scoped exception rather than relaxing the policy app-wide. Favicons
+# are pointed at the self-hosted ``/favicon.svg`` so ``img-src`` stays tight.
+_CSP_DOCS_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+
+_CSP_DOCS_PATHS = frozenset({"/docs", "/redoc"})
+
+
+def _csp_header_name() -> str:
+    """Return the CSP header to emit (enforcing unless opted out)."""
+    if get_env_config().api.vibe_trading_csp_report_only:
+        return "Content-Security-Policy-Report-Only"
+    return "Content-Security-Policy"
 
 
 async def _apply_security_headers(request: Request, call_next):
@@ -209,7 +242,10 @@ async def _apply_security_headers(request: Request, call_next):
     """
     response = await call_next(request)
     headers = response.headers
-    headers.setdefault("Content-Security-Policy-Report-Only", _CSP_REPORT_ONLY)
+    policy = (
+        _CSP_DOCS_POLICY if request.url.path in _CSP_DOCS_PATHS else _CSP_POLICY
+    )
+    headers.setdefault(_csp_header_name(), policy)
     headers.setdefault("X-Content-Type-Options", "nosniff")
     headers.setdefault("X-Frame-Options", "DENY")
     headers.setdefault("Permissions-Policy", _PERMISSIONS_POLICY)
@@ -415,19 +451,40 @@ def _require_shutdown_authorization(
         )
 
 
+#: Subject recorded when the caller proved possession of the shared API key.
+#: It is a role, not a person: every holder of that one secret authenticates
+#: identically, so this string must never be presented as an identity.
+SHARED_KEY_SUBJECT = "shared-key-holder"
+
+#: Subject recorded when no key is configured and a loopback client was trusted.
+LOOPBACK_SUBJECT = "loopback-operator"
+
+
 def _validate_api_auth(
     *,
     request: Request,
     cred: Optional[HTTPAuthorizationCredentials],
     query_api_key: Optional[str] = None,
     allow_query: bool = False,
-) -> None:
+) -> Principal:
     """Validate configured auth, preserving loopback-only dev mode.
 
     Key-first precedence: when an API key is configured every peer -- including
     loopback -- must present a valid credential (GHSA-7wgj). Only when no key is
     configured does the loopback dev-trust apply. Mirrors
     :func:`require_settings_write_auth`.
+
+    Returns:
+        The :class:`~src.session.models.Principal` the request authenticated as.
+        Both paths available today authorise without identifying, so the
+        returned principal has ``attributable=False``; a caller that needs a
+        named human must check that flag and refuse rather than read ``subject``
+        as a person. Previously this function returned None; the return value is
+        additive and every existing caller that ignores it is unaffected.
+
+    Raises:
+        HTTPException: 401 on a bad or missing credential, 403 for a non-local
+            client when no key is configured.
     """
     if request.method.upper() not in _SAFE_BROWSER_METHODS:
         _reject_cross_site_browser_request(request)
@@ -437,10 +494,10 @@ def _validate_api_auth(
         token = _auth_credential_from_header_or_query(cred, query_api_key, allow_query=allow_query)
         if not token or not hmac.compare_digest(token, api_key):
             raise HTTPException(status_code=401, detail="Invalid or missing API key")
-        return
+        return Principal(subject=SHARED_KEY_SUBJECT, auth_method=AuthMethod.SHARED_KEY)
 
     if _is_local_client(request):
-        return
+        return Principal(subject=LOOPBACK_SUBJECT, auth_method=AuthMethod.LOOPBACK_TRUST)
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="API_AUTH_KEY is required for non-local API access",
@@ -487,7 +544,7 @@ def _default_gateway_ips() -> set[ipaddress.IPv4Address]:
 
 
 def _trusted_docker_loopback_ip(ip: ipaddress._BaseAddress) -> bool:
-    """Return whether an IP is the trusted Docker host gateway."""
+    """Return whether an IP is the explicitly trusted Docker host gateway."""
     if not isinstance(ip, ipaddress.IPv4Address):
         return False
     if not get_env_config().api.vibe_trading_trust_docker_loopback:
@@ -514,9 +571,21 @@ def _shell_tools_enabled_for_request(request: Request) -> bool:
 async def require_auth(
     request: Request,
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
-) -> None:
-    """Validate Bearer token for sensitive API endpoints."""
-    _validate_api_auth(request=request, cred=cred)
+) -> Principal:
+    """Validate Bearer token for sensitive API endpoints.
+
+    Returns:
+        The authenticated :class:`~src.session.models.Principal`. Routes that
+        only need the check keep using ``dependencies=[Depends(require_auth)]``
+        and discard it; routes that need to record *who* acted declare
+        ``principal: Principal = Depends(require_auth)`` instead. The return
+        value is additive -- it was previously None and no existing caller
+        inspected it.
+
+    Raises:
+        HTTPException: Propagated from :func:`_validate_api_auth`.
+    """
+    return _validate_api_auth(request=request, cred=cred)
 
 
 async def require_event_stream_auth(
@@ -573,6 +642,9 @@ async def require_settings_write_auth(
     cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
 ) -> None:
     """Require explicit authorization before changing credential-routing settings."""
+    if request.method.upper() not in _SAFE_BROWSER_METHODS:
+        _reject_cross_site_browser_request(request)
+
     api_key = _configured_api_key()
     if api_key:
         token = _auth_credential_from_header_or_query(cred, None, allow_query=False)

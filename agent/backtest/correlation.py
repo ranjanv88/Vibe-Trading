@@ -7,6 +7,7 @@ over a configurable lookback window. Used by the /correlation API endpoint.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, Literal
 
 import pandas as pd
@@ -23,8 +24,9 @@ def infer_market(code: str) -> str:
 
     1. Crypto pair spellings (``BTC-USDT``, ``ETH/USD`` …).
     2. Explicit exchange suffix — always authoritative (``.HK``, ``.SH``/
-       ``.SZ``/``.BJ``, ``.US``). Bare HK and A-share codes are both purely
-       numeric, so the suffix is the only reliable disambiguator.
+       ``.SZ``/``.BJ``, ``.TO``/``.V``, ``.US``). Bare HK and A-share codes
+       are both purely numeric, so the suffix is the only reliable
+       disambiguator.
     3. Bare numeric codes by digit length: A-share codes are exactly 6 digits
        (600000, 000001, 300750, 688981, 830799); HK codes are at most 5
        (700, 0700, 9988, 3690). Prefix alone cannot tell them apart — both
@@ -41,8 +43,27 @@ def infer_market(code: str) -> str:
         return "a_share"
     if code_upper.endswith((".KS", ".KQ")):
         return "kr_equity"
+    if code_upper.endswith((".TO", ".V")):
+        return "ca_equity"
     if code_upper.endswith(".US"):
         return "us_equity"
+    # Yahoo's continuous-front-month futures notation (``GC=F``, ``CL=F``,
+    # ``SI=F``, ``HG=F``, ``MGC=F``). Mirrors the same pattern in
+    # ``backtest.engines._market_hooks._MARKET_PATTERNS`` so this offline
+    # classifier stays consistent with the engine-side classifier.
+    if re.match(r"^[A-Z]{2,5}=F$", code_upper):
+        return "futures"
+    # Yahoo's forex notation (``XAUUSD=X``, ``EURUSD=X``).
+    if re.match(r"^[A-Z]{6}=X$", code_upper):
+        return "forex"
+    # Bare 6-character precious-metal / FX symbols. Whitelist-restricted to
+    # a small set of base codes (ISO 4217 metals + G10 currencies) so a
+    # length-only pattern never re-routes a legitimate 6-letter US ticker.
+    if re.match(
+        r"^(?:XAU|XAG|XPT|XPD|EUR|GBP|JPY|CHF|CAD|AUD|NZD|USD)[A-Z]{3}$",
+        code_upper,
+    ):
+        return "forex"
     if code_upper.isdigit():
         if len(code_upper) == 6:
             return "a_share"

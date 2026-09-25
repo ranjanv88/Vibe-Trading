@@ -12,13 +12,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # wildcard ``enabled_tools`` (which would re-admit every WRITE/UNKNOWN tool) is
 # rejected at config-load time unless a broker-specific read-only OAuth probe is
 # explicitly documented below.
-LIVE_BROKER_SERVER_KEYS: frozenset[str] = frozenset({"robinhood", "ibkr"})
+LIVE_BROKER_SERVER_KEYS: frozenset[str] = frozenset({"robinhood", "ibkr", "scalable"})
 
 # URL host suffix -> canonical live-broker key. Detection by host prevents an
 # aliased config key from bypassing the wildcard rejection / classification gate.
 LIVE_BROKER_URL_HOST_SUFFIX_TO_KEY: dict[str, str] = {
     "robinhood.com": "robinhood",
     "ibkr.com": "ibkr",
+    "scalable.capital": "scalable",
 }
 
 # Live-broker URL host suffixes. Detecting a live broker by config key alone is
@@ -226,7 +227,7 @@ ROBINHOOD_MCP_SERVER_SEED: dict[str, object] = {
 # config must pin an explicit tool allowlist plus pass the live order gate.
 IBKR_MCP_SERVER_SEED: dict[str, object] = {
     "type": "streamableHttp",
-    "url": "https://api.ibkr.com/v1/api/mcp",
+    "url": "https://api.ibkr.com/v1/api/mcp-public",
     "auth": {
         "type": "oauth",
         "scopes": ["mcp.read"],
@@ -234,6 +235,51 @@ IBKR_MCP_SERVER_SEED: dict[str, object] = {
         "cache_dir": "~/.vibe-trading/live/ibkr/oauth",
     },
     "enabled_tools": ["*"],
+}
+
+# Canonical seed for Scalable Capital's Agentic Investing MCP server, shipped
+# OFF-by-default read-only: an explicit READ allowlist (never ``["*"]``), OAuth
+# auth, and the streamableHttp transport. Scalable has no paper environment, so
+# there is nothing to discriminate: order-path tools are pinned WRITE in
+# ``src/trading/connectors/scalable/classification.py``, are NOT seeded
+# here, and the profile that carries this server exposes no order capability.
+#
+# ``scopes`` is intentionally omitted: Scalable does not publish its OAuth scope
+# names, and an invented scope would fail authorization rather than a read. The
+# allowlist below MUST stay equal to the curated READ entries — a name here that
+# the curated map does not classify READ resolves UNKNOWN -> gated -> refused,
+# silently hiding a real read tool.
+SCALABLE_MCP_SERVER_SEED: dict[str, object] = {
+    "type": "streamableHttp",
+    "url": "https://mcp.scalable.capital/mcp",
+    "auth": {
+        "type": "oauth",
+        "client_name": "Vibe-Trading",
+        "cache_dir": "~/.vibe-trading/live/scalable/oauth",
+    },
+    "enabled_tools": [
+        # account & portfolio
+        "get_account_profile",
+        "list_accessible_portfolios",
+        "get_portfolio_overview",
+        "get_portfolio_holdings",
+        "get_portfolio_cash_breakdown",
+        "get_portfolio_performance",
+        "list_portfolio_transactions",
+        "get_transaction_details",
+        "get_overnight_summary",
+        # market data
+        "search_securities",
+        "search_derivatives",
+        "get_security_quote",
+        "get_security_chart",
+        "get_security_news",
+        # watchlist / alerts / savings-plan state
+        "list_watchlist_items",
+        "list_price_alerts",
+        "list_savings_plans",
+        "get_savings_plan_config",
+    ],
 }
 
 
@@ -426,6 +472,15 @@ class MCPServerConfigOverride(ConfigBase):
     enabled_tools: list[str] | None = None
 
 
+class DeliveryTargetConfig(ConfigBase):
+    """Operator-owned reusable destination for scheduled delivery."""
+
+    label: str = Field(min_length=1, max_length=128)
+    channel: str = Field(min_length=1, max_length=64)
+    target: str = Field(min_length=1, max_length=512)
+    enabled: bool = True
+
+
 class ChannelsConfig(ConfigBase):
     """Top-level IM channel config.
 
@@ -447,6 +502,7 @@ class ChannelsConfig(ConfigBase):
     # authenticated CLI/REST admin plane. Per-channel operators (channel-scoped
     # authority) live under each channel section's own ``operators`` list.
     operators: list[str] = Field(default_factory=list)
+    delivery_targets: dict[str, DeliveryTargetConfig] = Field(default_factory=dict)
 
 
 class AgentConfig(ConfigBase):

@@ -7,6 +7,7 @@ import { calcMA, calcBOLL, calcMACD, calcRSI, calcKDJ, calcEMA } from "@/lib/ind
 import { getChartTheme } from "@/lib/chart-theme";
 import { abbreviateNum } from "@/lib/formatters";
 import { echarts, CHART_GROUP, connectCharts } from "@/lib/echarts";
+import { escapeHtml } from "@/lib/escapeHtml";
 import { useThemeDark } from "@/lib/theme-store";
 
 type Sub = "vol" | "macd" | "rsi" | "kdj";
@@ -150,11 +151,16 @@ export function CandlestickChart({ data, markers, indicators, height = 500 }: Pr
       legendNames.push("BOLL");
     }
 
-    // Trade markers
+    // Trade markers (name renders as markPoint tooltip HTML, so every
+    // artifact-derived field is escaped before interpolation)
     const marks = (markers || []).map(m => ({
       coord: [m.time, m.price],
       value: m.side === "BUY" ? "B" : "S",
-      name: [`${m.side} @ ${m.price}`, m.qty ? `Qty: ${m.qty}` : "", m.reason || ""].filter(Boolean).join("\n"),
+      name: [
+        `${escapeHtml(m.side)} @ ${escapeHtml(String(m.price))}`,
+        m.qty ? `Qty: ${escapeHtml(String(m.qty))}` : "",
+        escapeHtml(m.reason || ""),
+      ].filter(Boolean).join("\n"),
       itemStyle: { color: m.side === "BUY" ? t.upColor : t.downColor },
       label: { color: "#fff", fontSize: 10, fontWeight: "bold" as const },
     }));

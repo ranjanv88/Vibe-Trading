@@ -54,6 +54,12 @@ class DataLoader:
 
     name = "eastmoney"
     markets = {"a_share", "hk_equity", "us_equity"}
+    # Volume unit is market-dependent (HKUDS/Vibe-Trading#1062): the A-share
+    # push2 endpoint reports board lots, the HK endpoint single shares —
+    # empirically verified 2026-08-11 (600519.SH ratio 1.00 vs tencent;
+    # 00700.HK ratio 1.00 vs tencent/yfinance). us_equity stays undeclared
+    # until empirically verified.
+    volume_units = {"a_share": "lots", "hk_equity": "shares"}
     requires_auth = False
 
     def is_available(self) -> bool:

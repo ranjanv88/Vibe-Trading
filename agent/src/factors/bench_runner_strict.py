@@ -448,6 +448,15 @@ def run_bench_strict(
             oos_ts = pd.Timestamp(oos_split)
         except (TypeError, ValueError) as exc:
             return _finish_error(f"invalid oos_split {oos_split!r}: {exc}")
+        close = panel.get("close")
+        if close is not None and len(close.index):
+            first = pd.Timestamp(close.index.min())
+            last = pd.Timestamp(close.index.max())
+            if not first <= oos_ts < last:
+                return _finish_error(
+                    f"oos_split {oos_split!r} must fall within the loaded sample "
+                    f"[{first.date()}, {last.date()})"
+                )
 
     def _fire_progress(idx: int, aid: str) -> None:
         if on_progress is None:
@@ -496,6 +505,16 @@ def run_bench_strict(
                 alpha_t_test = t_stat(test_slice)
                 ic_count_train = int(len(train_slice))
                 ic_count_test = int(len(test_slice))
+                # t_stat reads fewer than two observations as 0.0, so an empty
+                # side would be categorised as if it had been measured. The
+                # sample-range check above cannot see this: the IC series
+                # starts after the alpha's warmup and ends a forward-return
+                # horizon before the last price.
+                if min(ic_count_train, ic_count_test) < 2:
+                    raise SkipAlpha(
+                        f"oos_split {oos_split} leaves {ic_count_train} train / "
+                        f"{ic_count_test} test IC observations; each side needs 2"
+                    )
 
             meta = reg.get(aid).meta or {}
             ic_mean = float(signal_ic.mean())

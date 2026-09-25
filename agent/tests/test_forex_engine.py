@@ -17,6 +17,8 @@ import pytest
 
 from backtest.engines.forex import (
     ForexEngine,
+    _lot_units,
+    _METAL_SPECS,
     _normalize_symbol,
     _pip_value,
     _SPREAD_PIPS,
@@ -278,3 +280,55 @@ class TestContractMultiplier:
     def test_forex_multiplier_is_one(self) -> None:
         engine = _make_engine()
         assert engine.get_contract_multiplier("EUR/USD") == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Metals (XAU/XAG/XPT/XPD)
+# ---------------------------------------------------------------------------
+
+
+class TestMetals:
+    """Metals are not generic FX pairs: different pip size and different lot size."""
+
+    @pytest.mark.parametrize("symbol,expected", [
+        ("XAUUSD", 0.10), ("XAU/USD", 0.10), ("XAG/USD", 0.01),
+        ("XPT/USD", 0.10), ("XPD/USD", 0.10),
+    ])
+    def test_pip_value(self, symbol: str, expected: float) -> None:
+        assert _pip_value(_normalize_symbol(symbol)) == expected
+
+    def test_gold_pip_is_not_fx_pip(self) -> None:
+        """Regression: XAU/USD used to fall through to the 0.0001 FX default,
+        understating the spread by three orders of magnitude."""
+        assert _pip_value("XAU/USD") > _pip_value("EUR/USD") * 100
+
+    @pytest.mark.parametrize("symbol,expected", [
+        ("XAU/USD", 100.0), ("XAG/USD", 5_000.0), ("EUR/USD", STANDARD_LOT),
+    ])
+    def test_lot_units(self, symbol: str, expected: float) -> None:
+        assert _lot_units(symbol) == expected
+
+    def test_gold_spread_is_listed(self) -> None:
+        assert "XAU/USD" in _SPREAD_PIPS
+        cost = _SPREAD_PIPS["XAU/USD"] * _METAL_SPECS["XAU"][0]
+        assert 0.20 <= cost <= 0.60          # a realistic full spread, in dollars
+
+    def test_half_spread_applied_to_gold(self) -> None:
+        engine = _make_engine()
+        engine._active_symbol = "XAUUSD"
+        buy = engine.apply_slippage(2000.0, 1)
+        sell = engine.apply_slippage(2000.0, -1)
+        assert buy > 2000.0 and sell < 2000.0
+        assert 0.30 <= (buy - sell) <= 0.60  # full round trip, spread + slippage
+
+    def test_gold_position_under_1000_oz_survives_rounding(self) -> None:
+        """Regression: micro-lot rounding at 1,000 units zeroed every realistic
+        gold position (a micro lot of gold is 1 oz, not 1,000)."""
+        engine = _make_engine()
+        engine._active_symbol = "XAUUSD"
+        assert engine.round_size(5.0, 2000.0) == 5.0
+
+    def test_fx_rounding_unchanged(self) -> None:
+        engine = _make_engine()
+        engine._active_symbol = "EURUSD"
+        assert engine.round_size(5500.0, 1.10) == 5000.0

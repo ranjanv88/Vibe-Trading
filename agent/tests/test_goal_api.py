@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 import api_server
+from src.session.models import Message
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -19,10 +21,17 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     return TestClient(api_server.app, client=("127.0.0.1", 50000))
 
 
-def _session_id(client: TestClient) -> str:
-    response = client.post("/sessions", json={"title": "goal api"})
+def _session_id(client: TestClient, *, title: str = "goal api") -> str:
+    response = client.post("/sessions", json={"title": title})
     assert response.status_code == 201
     return response.json()["session_id"]
+
+
+def _add_user_message(session_id: str) -> None:
+    service = api_server._get_session_service()
+    service.store.append_message(
+        Message(session_id=session_id, role="user", content="Evaluate NVDA momentum.")
+    )
 
 
 def test_api_goal_uses_full_default_research_checklist(tmp_path: Path, monkeypatch) -> None:
@@ -136,3 +145,48 @@ def test_api_can_edit_current_goal_objective(tmp_path: Path, monkeypatch) -> Non
     assert payload["goal"]["goal_id"] == goal_id
     assert payload["goal"]["objective"] == "Evaluate NVDA versus QQQ momentum."
     assert payload["snapshot"]["claims"][0]["text"] == "Evaluate NVDA versus QQQ momentum."
+
+
+def test_auto_title_closes_chat_client(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    sid = _session_id(client, title="")
+    _add_user_message(sid)
+    response = MagicMock(content="NVDA Momentum Review")
+
+    with patch("src.providers.chat.ChatLLM") as chat_cls:
+        chat_cls.return_value.chat.return_value = response
+        result = client.post(f"/sessions/{sid}/title/auto")
+
+    assert result.status_code == 200
+    assert result.json()["title"] == "NVDA Momentum Review"
+    chat_cls.return_value.close.assert_called_once_with()
+
+
+def test_auto_title_closes_chat_client_when_model_returns_empty(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = _client(tmp_path, monkeypatch)
+    sid = _session_id(client, title="")
+    _add_user_message(sid)
+    response = MagicMock(content="")
+
+    with patch("src.providers.chat.ChatLLM") as chat_cls:
+        chat_cls.return_value.chat.return_value = response
+        result = client.post(f"/sessions/{sid}/title/auto")
+
+    assert result.status_code == 502
+    assert result.json()["detail"] == "empty title from model"
+    chat_cls.return_value.close.assert_called_once_with()
+
+
+def test_auto_title_closes_chat_client_when_provider_fails(tmp_path: Path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    sid = _session_id(client, title="")
+    _add_user_message(sid)
+
+    with patch("src.providers.chat.ChatLLM") as chat_cls:
+        chat_cls.return_value.chat.side_effect = RuntimeError("provider unavailable")
+        result = client.post(f"/sessions/{sid}/title/auto")
+
+    assert result.status_code == 502
+    chat_cls.return_value.close.assert_called_once_with()

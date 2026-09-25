@@ -77,6 +77,25 @@ describe("MessageBubble", () => {
         "text-muted-foreground",
       );
     });
+
+    it("renders every attachment in a multi-file request", () => {
+      render(
+        <MessageBubble
+          msg={makeMsg({
+            type: "user",
+            content: "Compare these",
+            meta: {
+              attachments: [
+                { filename: "report.pdf" },
+                { filename: "chart.png" },
+              ],
+            },
+          })}
+        />,
+      );
+      expect(screen.getByText("report.pdf")).toBeInTheDocument();
+      expect(screen.getByText("chart.png")).toBeInTheDocument();
+    });
   });
 
   describe("answer messages", () => {

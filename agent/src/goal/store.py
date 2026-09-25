@@ -67,7 +67,10 @@ def _json_dumps(value: object) -> str:
 def _json_loads(value: str | None, default: object) -> object:
     if not value:
         return default
-    return json.loads(value)
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return default
 
 
 def _default_db_path() -> Path:

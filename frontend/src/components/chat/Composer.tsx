@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -25,6 +27,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import type { UploadedAttachment } from "@/lib/attachments";
 import type { AgentActivity } from "@/stores/agent";
 import {
   LiveRuntimeControl,
@@ -37,12 +40,19 @@ const CONNECTOR_PORTFOLIO_PROMPT =
   "Use the selected trading connector profile to summarize my account, positions, concentration, cash, and portfolio risk. Do not place or modify orders.";
 
 const ACCEPTED_FILE_TYPES =
-  ".pdf,.docx,.xlsx,.xls,.pptx,.csv,.tsv,.txt,.md,.log,.json,.yaml,.yml,.toml,.html,.xml,.rst,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tiff";
+  ".pdf,.docx,.xlsx,.xls,.pptx,.csv,.tsv,.txt,.md,.log,.json,.toml,.html,.xml,.rst,.png,.jpg,.jpeg,.gif,.bmp,.webp,.tiff";
+const MAX_ATTACHMENT_COUNT = 5;
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const BLOCKED_EXTENSIONS = [
+  ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".app", ".dmg",
+  ".so", ".dll", ".dylib", ".py", ".pyw", ".sh", ".bash", ".zsh",
+  ".fish", ".ps1", ".yaml", ".yml", ".j2", ".jinja", ".jinja2",
+  ".template", ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
+  ".xz",
+];
+const BLOCKED_FILENAMES = new Set(["dockerfile", "containerfile"]);
 
-export interface ComposerAttachment {
-  filename: string;
-  filePath: string;
-}
+export type ComposerAttachment = UploadedAttachment;
 
 export interface ComposerHandle {
   fill(prompt: string): void;
@@ -59,7 +69,7 @@ interface Props {
   goalComposerActive: boolean;
   swarmPreset: { name: string; title: string } | null;
   panels?: ReactNode;
-  onSubmit: (prompt: string, attachment: ComposerAttachment | null) => void;
+  onSubmit: (prompt: string, attachments: ComposerAttachment[]) => void;
   onCancel: () => void;
   onExport: () => void;
   onStartGoal: () => void;
@@ -90,8 +100,10 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isComposingRef = useRef(false);
   const lastCompositionEndRef = useRef(0);
-  const [attachment, setAttachment] = useState<ComposerAttachment | null>(null);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [draggingFiles, setDraggingFiles] = useState(false);
+  const dragDepthRef = useRef(0);
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const uploadMenuRef = useRef<HTMLDivElement>(null);
   const uploadMenuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -102,14 +114,14 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
   }, []);
 
   const submitPrompt = useCallback((prompt: string) => {
-    if (!prompt.trim() || streaming) return;
+    if ((!prompt.trim() && attachments.length === 0) || streaming || uploading) return;
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
-    const submittedAttachment = attachment;
-    if (!goalComposerActive) setAttachment(null);
-    onSubmit(prompt.trim(), submittedAttachment);
+    const submittedAttachments = [...attachments];
+    if (!goalComposerActive) setAttachments([]);
+    onSubmit(prompt.trim(), submittedAttachments);
     inputRef.current?.focus();
-  }, [attachment, goalComposerActive, onSubmit, streaming]);
+  }, [attachments, goalComposerActive, onSubmit, streaming, uploading]);
 
   useImperativeHandle(ref, () => ({
     fill(prompt: string) {
@@ -131,38 +143,89 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
     submitPrompt(input);
   }, [input, submitPrompt]);
 
-  const handleFileSelect = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    event.target.value = "";
-    const blockedExts = [
-      ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".app", ".dmg",
-      ".so", ".dll", ".dylib",
-      ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz",
-    ];
-    const lowered = file.name.toLowerCase();
-    if (blockedExts.some((ext) => lowered.endsWith(ext))) {
-      toast.error(t("agent.executablesNotAllowed"));
+  const uploadFiles = useCallback(async (files: File[]) => {
+    if (files.length === 0 || streaming || uploading) return;
+    const remainingSlots = MAX_ATTACHMENT_COUNT - attachments.length;
+    if (remainingSlots <= 0) {
+      toast.error(t("agent.attachmentLimit", { count: MAX_ATTACHMENT_COUNT }));
       return;
     }
-    if (file.size > 50 * 1024 * 1024) {
-      toast.error(t("agent.fileSizeExceeds"));
-      return;
+    const validFiles = files.filter((file) => {
+      const lowered = file.name.toLowerCase();
+      if (
+        BLOCKED_FILENAMES.has(lowered)
+        || BLOCKED_EXTENSIONS.some((extension) => lowered.endsWith(extension))
+      ) {
+        toast.error(t("agent.executablesNotAllowed"));
+        return false;
+      }
+      if (file.size > MAX_FILE_SIZE) {
+        toast.error(t("agent.fileSizeExceeds"));
+        return false;
+      }
+      return true;
+    });
+    if (validFiles.length > remainingSlots) {
+      toast.error(t("agent.attachmentLimit", { count: MAX_ATTACHMENT_COUNT }));
     }
+    const accepted = validFiles.slice(0, remainingSlots);
+    if (accepted.length === 0) return;
+
     setUploading(true);
     setShowUploadMenu(false);
     try {
-      const result = await api.uploadFile(file);
-      setAttachment({ filename: result.filename, filePath: result.file_path });
-      toast.success(t("agent.uploaded", { filename: result.filename }));
-    } catch (error) {
-      toast.error(t("agent.uploadFailed", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      }));
+      for (const file of accepted) {
+        try {
+          const result = await api.uploadFile(file);
+          setAttachments((current) => [
+            ...current,
+            { filename: result.filename, filePath: result.file_path },
+          ]);
+          toast.success(t("agent.uploaded", { filename: result.filename }));
+        } catch (error) {
+          toast.error(t("agent.uploadFailed", {
+            error: error instanceof Error ? error.message : "Unknown error",
+          }));
+        }
+      }
     } finally {
       setUploading(false);
     }
-  }, [t]);
+  }, [attachments.length, streaming, t, uploading]);
+
+  const handleFileSelect = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    void uploadFiles(files);
+  }, [uploadFiles]);
+
+  const handlePaste = useCallback((event: ClipboardEvent<HTMLFormElement>) => {
+    const files = Array.from(event.clipboardData.files ?? []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void uploadFiles(files);
+  }, [uploadFiles]);
+
+  const handleDragEnter = useCallback((event: DragEvent<HTMLFormElement>) => {
+    if (streaming || uploading) return;
+    if (!Array.from(event.dataTransfer.types ?? []).includes("Files")) return;
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    setDraggingFiles(true);
+  }, [streaming, uploading]);
+
+  const handleDragLeave = useCallback((event: DragEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDraggingFiles(false);
+  }, []);
+
+  const handleDrop = useCallback((event: DragEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDraggingFiles(false);
+    void uploadFiles(Array.from(event.dataTransfer.files ?? []));
+  }, [uploadFiles]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -187,7 +250,20 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
   }, [showUploadMenu]);
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
+    <form
+      onSubmit={handleSubmit}
+      onPaste={handlePaste}
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className="relative space-y-2"
+    >
+      {draggingFiles && (
+        <div role="status" className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-primary bg-background/90 text-sm font-medium text-primary">
+          {t("agent.dropFiles")}
+        </div>
+      )}
       {swarmPreset && (
         <div className="flex items-center gap-1">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium">
@@ -212,15 +288,22 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
       )}
       {panels}
       <LiveRuntimeStatus />
-      {attachment && (
-        <div className="flex items-center gap-1">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium">
-            <Paperclip className="h-3 w-3" />
-            {attachment.filename}
-            <button type="button" onClick={() => setAttachment(null)} className="hover:text-destructive transition-colors">
-              <X className="h-3 w-3" />
-            </button>
-          </span>
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          {attachments.map((attachment, index) => (
+            <span key={attachment.filePath} className="inline-flex max-w-full items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 text-primary text-xs font-medium">
+              <Paperclip className="h-3 w-3 shrink-0" />
+              <span className="truncate">{attachment.filename}</span>
+              <button
+                type="button"
+                aria-label={t("agent.removeAttachment", { filename: attachment.filename })}
+                onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                className="hover:text-destructive transition-colors"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          ))}
         </div>
       )}
       {uploading && (
@@ -261,7 +344,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
                 className="w-full px-3 py-2 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
               >
                 <Paperclip className="h-4 w-4" />
-                {t("agent.uploadPdf")}
+                {t("agent.uploadFile")}
               </button>
               <div className="border-t my-1" />
               <button
@@ -321,6 +404,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           accept={ACCEPTED_FILE_TYPES}
           onChange={handleFileSelect}
           className="hidden"
@@ -397,7 +481,7 @@ export const Composer = memo(forwardRef<ComposerHandle, Props>(function Composer
         ) : (
           <button
             type="submit"
-            disabled={goalComposerActive ? !input.trim() : (!input.trim() && !attachment)}
+            disabled={uploading || (goalComposerActive ? !input.trim() : (!input.trim() && attachments.length === 0))}
             className="h-10 px-4 rounded-xl bg-primary text-primary-foreground text-sm font-medium disabled:opacity-40 hover:opacity-90 transition-opacity"
             title={t("agent.send")}
             aria-label={t("agent.send")}

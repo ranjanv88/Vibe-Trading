@@ -30,19 +30,51 @@ def _clear_cache():
     invalidate_mcp_specs_cache()
 
 
-def _make_server_config(command="mcp-server", args=None, env=None, enabled_tools=None):
+def _make_server_config(
+    command="mcp-server",
+    args=None,
+    env=None,
+    enabled_tools=None,
+    type_=None,
+    url=None,
+    headers=None,
+    auth=None,
+):
     """Create a minimal MCPServerConfig-like object for testing."""
     config = MagicMock()
     config.command = command
     config.args = args or ["--port", "8080"]
     config.env = env or {}
     config.enabled_tools = enabled_tools or ["*"]
-    config.url = None
+    config.type = type_
+    config.url = url
     config.tool_timeout = 30.0
     config.init_timeout = None
-    config.headers = {}
-    config.auth = None
+    config.headers = headers or {}
+    config.auth = auth
     return config
+
+
+def _make_oauth_config(
+    client_name="Vibe-Trading",
+    scopes=None,
+    cache_dir="~/.vibe-trading/oauth",
+    callback_port=None,
+    client_id=None,
+    client_secret=None,
+    client_metadata_url=None,
+):
+    """Create a minimal MCPOAuthConfig-like object for testing."""
+    auth = MagicMock()
+    auth.type = "oauth"
+    auth.scopes = scopes or []
+    auth.client_name = client_name
+    auth.cache_dir = cache_dir
+    auth.callback_port = callback_port
+    auth.client_id = client_id
+    auth.client_secret = client_secret
+    auth.client_metadata_url = client_metadata_url
+    return auth
 
 
 def _make_specs(server_name: str, tool_names: list[str]) -> list[MCPRemoteToolSpec]:
@@ -100,6 +132,114 @@ class TestMakeCacheKey:
         key1 = _make_cache_key("srv", config1)
         key2 = _make_cache_key("srv", config2)
         assert key1 != key2
+
+    def test_different_url_produces_different_key(self):
+        """Two HTTP configs differing only in url must not share a cache entry."""
+        config1 = _make_server_config(
+            type_="sse", url="https://staging.example.com/mcp"
+        )
+        config2 = _make_server_config(type_="sse", url="https://prod.example.com/mcp")
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 != key2
+
+    def test_different_headers_produces_different_key(self):
+        """Two HTTP configs differing only in a header value must not share a cache entry."""
+        config1 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer token-a"},
+        )
+        config2 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"Authorization": "Bearer token-b"},
+        )
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 != key2
+
+    def test_raw_header_secret_not_present_in_key(self):
+        """A secret header value must never appear as plaintext in the cache key."""
+        secret = "super-secret-bearer-token"
+        config = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"Authorization": f"Bearer {secret}"},
+        )
+        key = _make_cache_key("srv", config)
+        assert all(secret not in str(part) for part in key)
+
+    def test_headers_in_different_insertion_order_produce_same_key(self):
+        """Header fingerprinting must canonicalize order, not hash insertion order."""
+        config1 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"Authorization": "x", "X-Tenant": "a"},
+        )
+        config2 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"X-Tenant": "a", "Authorization": "x"},
+        )
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 == key2
+
+    def test_different_oauth_config_produces_different_key(self):
+        """Two configs differing only in OAuth client secret must not share a cache entry."""
+        config1 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            auth=_make_oauth_config(client_secret="secret-a"),
+        )
+        config2 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            auth=_make_oauth_config(client_secret="secret-b"),
+        )
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 != key2
+
+    def test_raw_oauth_client_secret_not_present_in_key(self):
+        """An OAuth client secret must never appear as plaintext in the cache key."""
+        secret = "super-secret-oauth-client-secret"
+        config = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            auth=_make_oauth_config(client_secret=secret),
+        )
+        key = _make_cache_key("srv", config)
+        assert all(secret not in str(part) for part in key)
+
+    def test_different_transport_type_produces_different_key(self):
+        """Same url on a different transport type must not share a cache entry."""
+        config1 = _make_server_config(type_="sse", url="https://example.com/mcp")
+        config2 = _make_server_config(
+            type_="streamableHttp", url="https://example.com/mcp"
+        )
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 != key2
+
+    def test_identical_http_config_produces_identical_key(self):
+        """Two separately-built but equal HTTP configs must produce the same key."""
+        config1 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"X-Tenant": "a"},
+            auth=_make_oauth_config(client_id="abc"),
+        )
+        config2 = _make_server_config(
+            type_="sse",
+            url="https://example.com/mcp",
+            headers={"X-Tenant": "a"},
+            auth=_make_oauth_config(client_id="abc"),
+        )
+        key1 = _make_cache_key("srv", config1)
+        key2 = _make_cache_key("srv", config2)
+        assert key1 == key2
 
 
 class TestMCPSpecsCache:

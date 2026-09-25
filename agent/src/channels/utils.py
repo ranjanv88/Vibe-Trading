@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 import socket
+import ssl
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from src.config.paths import get_data_dir
 
+logger = logging.getLogger(__name__)
+
 _UNSAFE_CHARS = re.compile(r"[/\\:*?\"<>|]")
+
+# Static client identification for the RFC 2971 IMAP ``ID`` command. NetEase
+# mailboxes (163/126/yeah.net) accept ``LOGIN`` but reject the first ``SELECT``
+# with ``Unsafe Login`` unless the client has identified itself; other servers
+# accept or ignore ``ID``. No user data or secrets are sent.
+_IMAP_CLIENT_ID = '("name" "vibe-trading" "version" "1.0" "vendor" "HKUDS")'
 
 
 def get_media_dir(channel_name: str) -> Path:
@@ -92,6 +103,44 @@ def split_message(content: str, max_len: int = 2000) -> list[str]:
 def safe_filename(name: str) -> str:
     """Replace unsafe path characters with underscores."""
     return _UNSAFE_CHARS.sub("_", name).strip()
+
+
+def send_imap_id(client: Any) -> None:
+    """Send a best-effort RFC 2971 IMAP ``ID`` command; never raises.
+
+    NetEase mailboxes (163/126/yeah.net) accept ``LOGIN`` but reject the
+    first ``SELECT`` with ``Unsafe Login`` unless the client has sent an
+    ``ID`` command identifying itself. Sending ``ID`` is harmless for
+    servers that support it and ignored by those that do not, so this is
+    best-effort: any failure (unsupported command, closed socket) is
+    swallowed and the caller proceeds to ``SELECT`` regardless.
+
+    Args:
+        client: A connected, logged-in ``imaplib.IMAP4`` or ``IMAP4_SSL``.
+    """
+    try:
+        client.xatom("ID", _IMAP_CLIENT_ID)
+    except Exception:  # noqa: BLE001 - best-effort; never block the connection
+        logger.debug("IMAP ID command failed (non-fatal)", exc_info=True)
+
+
+def email_tls_context(verify: bool) -> ssl.SSLContext:
+    """Return the TLS context for every email connection, implicit SSL or STARTTLS.
+
+    ``verify=True`` (the default) verifies the server certificate and hostname
+    against the system CA bundle, so a credential is never sent to an
+    unverified server. ``verify=False`` disables verification — an explicit,
+    documented opt-out for self-signed or internal-CA mail servers that trades
+    MITM protection for connectivity. IMAP and SMTP, implicit SSL and STARTTLS,
+    all take their context here, so ``verify_tls`` is one switch for all four.
+    """
+    if verify:
+        return ssl.create_default_context()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # check_hostname must be cleared before CERT_NONE or Python raises ValueError.
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
 
 
 def validate_url_target(url: str, *, allow_loopback: bool = False) -> tuple[bool, str]:

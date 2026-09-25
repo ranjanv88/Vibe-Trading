@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 from src.api import settings_routes
+from tests.module_os_helpers import patch_module_os
 
 
 @pytest.fixture
@@ -255,6 +256,31 @@ def test_update_deepseek_settings_uses_exact_reported_payload(
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "DEEPSEEK_API_KEY=sk-deepseek-test" in env_text
     assert "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1" in env_text
+
+
+def test_desktop_secure_mode_never_persists_injected_llm_key(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS", "1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "dpapi-decrypted-key")
+
+    response = client.put(
+        "/settings/llm",
+        json={
+            "provider": "deepseek",
+            "model_name": "deepseek-chat",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["api_key_configured"] is True
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "dpapi-decrypted-key" not in env_text
+    assert "DEEPSEEK_API_KEY=" in env_text
+
 
 @pytest.mark.parametrize(
     ("provider", "api_key_env", "base_url_env", "base_url"),
@@ -506,6 +532,48 @@ def test_update_data_source_settings_persists_tushare_token(
     assert "TUSHARE_TOKEN=ts-secret-token" in env_text
 
 
+def test_update_data_source_settings_persists_gildata_token(
+    client: TestClient, tmp_path: Path,
+) -> None:
+    response = client.put(
+        "/settings/data-sources",
+        json={"gildata_token": "gd-secret-token"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gildata_token_configured"] is True
+    assert body["gildata_token_hint"] is None
+    assert "gd-secret-token" not in response.text
+    assert "gd-s...oken" not in response.text
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "GILDATA_TOKEN=gd-secret-token" in env_text
+
+    cleared = client.put(
+        "/settings/data-sources", json={"clear_gildata_token": True},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["gildata_token_configured"] is False
+
+
+def test_desktop_secure_mode_never_persists_injected_tushare_token(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VIBE_TRADING_DESKTOP_SECURE_CREDENTIALS", "1")
+    monkeypatch.setenv("TUSHARE_TOKEN", "dpapi-tushare-token")
+
+    response = client.put("/settings/data-sources", json={})
+
+    assert response.status_code == 200
+    assert response.json()["tushare_token_configured"] is True
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "dpapi-tushare-token" not in env_text
+    assert "TUSHARE_TOKEN=" in env_text
+
+
 def test_settings_writes_reject_remote_dev_mode_clients(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -554,7 +622,7 @@ def test_atomic_write_secret_is_crash_safe(
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise OSError("simulated crash before commit")
 
-    monkeypatch.setattr(helpers.os, "replace", _boom)
+    patch_module_os(monkeypatch, helpers, replace=_boom)
 
     with pytest.raises(OSError):
         helpers._atomic_write_secret(target, "NEW=2\n")
@@ -589,3 +657,157 @@ def test_atomic_write_secret_supports_platforms_without_fchmod(
     helpers._atomic_write_secret(target, "KEY=value\n")
 
     assert target.read_text(encoding="utf-8") == "KEY=value\n"
+
+
+# ---------------------------------------------------------------------------
+# Per-market source-order overrides (MARKET_DATA_ORDER_*)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _reset_source_order_env():
+    """Scrub order overrides from the process env and restore default chains.
+
+    The PUT handler hot-applies overrides into os.environ and the registry;
+    both must return to defaults so later tests see pristine chains.
+    """
+    from backtest.loaders import registry
+
+    yield
+    for key in [k for k in list(os.environ) if k.startswith("MARKET_DATA_ORDER_")]:
+        os.environ.pop(key, None)
+    registry.refresh_source_order_overrides()
+
+
+def test_get_data_source_settings_lists_default_source_orders(
+    client: TestClient,
+    _reset_source_order_env,
+) -> None:
+    response = client.get("/settings/data-sources")
+
+    assert response.status_code == 200
+    entries = response.json()["source_orders"]
+    orders = {entry["market"]: entry for entry in entries}
+    assert set(orders) == {
+        "a_share", "us_equity", "hk_equity", "india_equity", "kr_equity",
+        "ca_equity", "ar_equity", "vietnam_equity", "uk_equity", "crypto", "futures",
+        "fund", "macro", "forex", "index",
+    }
+    a_share = orders["a_share"]
+    assert a_share["env_var"] == "MARKET_DATA_ORDER_A_SHARE"
+    assert a_share["override"] is None
+    assert a_share["override_invalid"] is False
+    assert a_share["effective_order"] == a_share["default_order"]
+    assert a_share["default_order"][0] == "tencent"
+    uk_equity = orders["uk_equity"]
+    assert uk_equity["env_var"] == "MARKET_DATA_ORDER_UK_EQUITY"
+    assert uk_equity["default_order"][0] == "yahoo"
+
+
+def test_update_source_orders_persists_and_hot_applies(
+    client: TestClient,
+    tmp_path: Path,
+    _reset_source_order_env,
+) -> None:
+    from backtest.loaders import registry
+
+    response = client.put(
+        "/settings/data-sources",
+        json={
+            "source_orders": [
+                {
+                    "market": "a_share",
+                    "order": [
+                        "tushare", "tencent", "mootdx", "eastmoney",
+                        "baostock", "akshare", "gildata", "local",
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    entry = next(
+        e for e in response.json()["source_orders"] if e["market"] == "a_share"
+    )
+    # Response reports the new effective order...
+    assert entry["effective_order"][0] == "tushare"
+    assert entry["override"] is not None
+    assert entry["override"][0] == "tushare"
+    # ...persisted to the dotenv...
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MARKET_DATA_ORDER_A_SHARE=tushare,tencent,mootdx" in env_text
+    # ...synced into the running process env...
+    assert os.environ.get("MARKET_DATA_ORDER_A_SHARE", "").startswith("tushare,")
+    # ...and hot-applied to the live registry chain.
+    assert registry.FALLBACK_CHAINS["a_share"][0] == "tushare"
+
+
+def test_update_source_orders_reset_clears_override(
+    client: TestClient,
+    tmp_path: Path,
+    _reset_source_order_env,
+) -> None:
+    from backtest.loaders import registry
+
+    put = client.put(
+        "/settings/data-sources",
+        json={
+            "source_orders": [
+                {
+                    "market": "a_share",
+                    "order": [
+                        "tushare", "tencent", "mootdx", "eastmoney",
+                        "baostock", "akshare", "gildata", "local",
+                    ],
+                },
+            ],
+        },
+    )
+    assert put.status_code == 200
+
+    reset = client.put(
+        "/settings/data-sources",
+        json={"source_orders": [{"market": "a_share", "order": None}]},
+    )
+
+    assert reset.status_code == 200
+    entry = next(
+        e for e in reset.json()["source_orders"] if e["market"] == "a_share"
+    )
+    assert entry["override"] is None
+    assert entry["effective_order"] == entry["default_order"]
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "MARKET_DATA_ORDER_A_SHARE=\n" in env_text  # cleared, not deleted
+    assert registry.FALLBACK_CHAINS["a_share"] == entry["default_order"]
+
+
+def test_update_source_orders_rejects_non_permutation(
+    client: TestClient,
+    tmp_path: Path,
+    _reset_source_order_env,
+) -> None:
+    response = client.put(
+        "/settings/data-sources",
+        json={"source_orders": [{"market": "crypto", "order": ["okx", "binance"]}]},
+    )
+
+    assert response.status_code == 400
+    assert "permutation" in response.json()["detail"]
+    # Rejected before anything was persisted.
+    assert not (tmp_path / ".env").exists()
+
+
+def test_update_source_orders_rejects_unknown_market(
+    client: TestClient,
+    tmp_path: Path,
+    _reset_source_order_env,
+) -> None:
+    response = client.put(
+        "/settings/data-sources",
+        json={"source_orders": [{"market": "mars_equity", "order": ["okx"]}]},
+    )
+
+    assert response.status_code == 400
+    assert "Unknown market" in response.json()["detail"]
+    assert not (tmp_path / ".env").exists()

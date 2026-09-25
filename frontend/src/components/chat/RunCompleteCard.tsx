@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { lazy, memo, Suspense, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import { BarChart3, Code2, FileText, Loader2 } from "lucide-react";
+import { LayoutDashboard, Code2, FileText, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { AgentAvatar } from "./AgentAvatar";
 import { MetricsCard } from "./MetricsCard";
@@ -102,10 +102,10 @@ export const RunCompleteCard = memo(function RunCompleteCard({ msg }: Props) {
         <div className="flex items-center gap-3 flex-wrap">
           {msg.runId && (
             <Link
-              to={`/runs/${msg.runId}`}
+              to={`/runs/${encodeURIComponent(msg.runId)}?view=dashboard`}
               className="text-sm text-primary hover:underline inline-flex items-center gap-1.5 font-medium"
             >
-              <BarChart3 className="h-3.5 w-3.5" />
+              <LayoutDashboard className="h-3.5 w-3.5" />
               {t("runComplete.fullReport")}
             </Link>
           )}

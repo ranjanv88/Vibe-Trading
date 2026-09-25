@@ -22,12 +22,22 @@ def _local_client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
-def clear_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Start every auth test from dev-mode auth."""
+def clear_api_key(monkeypatch: pytest.MonkeyPatch):
+    """Start every auth test from dev-mode auth.
+
+    The cached ``EnvConfig`` singleton is reset on both sides of the test so a
+    case that sets ``API_AUTH_KEY`` / ``VIBE_TRADING_TRUST_DOCKER_LOOPBACK``
+    cannot leak a stale config into the next one.
+    """
+    from src.config.accessor import reset_env_config
+
     monkeypatch.delenv("API_AUTH_KEY", raising=False)
     monkeypatch.delenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK", raising=False)
     monkeypatch.delenv("VIBE_TRADING_ENABLE_SHELL_TOOLS", raising=False)
     monkeypatch.setattr(api_server, "_API_KEY", "")
+    reset_env_config()
+    yield
+    reset_env_config()
 
 
 def test_remote_write_requires_api_key_when_key_unset() -> None:
@@ -65,9 +75,18 @@ def test_local_dev_write_allowed_when_key_unset() -> None:
     assert response.status_code in {201, 501}
 
 
+def test_remote_capability_inventory_requires_api_key_when_key_unset() -> None:
+    client = _remote_client()
+
+    for path in ("/skills", "/swarm/presets", "/openapi.json"):
+        assert client.get(path).status_code == 403, path
+
+
 def test_docker_gateway_dev_write_allowed_only_with_compose_trust_flag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from src.config.accessor import reset_env_config
+
     request = SimpleNamespace(client=SimpleNamespace(host="172.18.0.1"))
     monkeypatch.setattr(
         api_server,
@@ -78,10 +97,28 @@ def test_docker_gateway_dev_write_allowed_only_with_compose_trust_flag(
     assert not api_server._is_local_client(request)
 
     monkeypatch.setenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK", "1")
-    from src.config.accessor import reset_env_config
     reset_env_config()
 
     assert api_server._is_local_client(request)
+
+
+def test_default_docker_gateway_browser_flow_remains_zero_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compose gateway trust reaches a sensitive route without a key."""
+    from src.config.accessor import reset_env_config
+
+    monkeypatch.setenv("VIBE_TRADING_TRUST_DOCKER_LOOPBACK", "1")
+    monkeypatch.setattr(
+        api_server,
+        "_default_gateway_ips",
+        lambda: {ipaddress.IPv4Address("172.18.0.1")},
+    )
+    reset_env_config()
+
+    client = TestClient(api_server.app, client=("172.18.0.1", 50000))
+    response = client.post("/sessions", json={})
+    assert response.status_code in {201, 501}
 
 
 def test_docker_network_peer_is_not_local_even_with_compose_trust_flag(
@@ -110,6 +147,9 @@ def test_configured_api_key_required_for_sensitive_reads(
         "/sessions",
         "/sessions/abcdef012345/goal",
         "/swarm/runs",
+        "/skills",
+        "/swarm/presets",
+        "/openapi.json",
     ]:
         response = client.get(path)
         assert response.status_code == 401, path
@@ -121,12 +161,10 @@ def test_configured_api_key_accepts_bearer_for_sensitive_reads(
     monkeypatch.setenv("API_AUTH_KEY", "secret")
     monkeypatch.setattr(api_server, "_API_KEY", "secret")
 
-    response = _remote_client().get(
-        "/runs",
-        headers={"Authorization": "Bearer secret"},
-    )
-
-    assert response.status_code == 200
+    client = _remote_client()
+    for path in ("/runs", "/skills", "/swarm/presets", "/openapi.json"):
+        response = client.get(path, headers={"Authorization": "Bearer secret"})
+        assert response.status_code == 200, path
 
 
 def test_loopback_requires_auth_when_api_key_configured(
@@ -154,6 +192,35 @@ def test_loopback_requires_auth_when_api_key_configured(
     # Remote with bearer: accepted
     remote_bearer = remote.get("/runs", headers={"Authorization": "Bearer secret"})
     assert remote_bearer.status_code == 200
+
+
+def test_interactive_docs_are_loopback_only_in_keyless_dev_mode() -> None:
+    """Default docs work locally without exposing the schema to remote peers."""
+    local = _local_client()
+    remote = _remote_client()
+
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert local.get(path).status_code == 200, path
+        assert remote.get(path).status_code == 403, path
+
+
+def test_keyed_deployment_disables_viewers_but_allows_bearer_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured key never creates a browser docs bootstrap deadlock."""
+    from src.config.accessor import reset_env_config
+
+    monkeypatch.setenv("API_AUTH_KEY", "secret")
+    monkeypatch.setattr(api_server, "_API_KEY", "secret")
+    reset_env_config()
+    bearer = {"Authorization": "Bearer secret"}
+
+    for client in (_local_client(), _remote_client()):
+        for path in ("/docs", "/redoc"):
+            assert client.get(path).status_code == 404, path
+            assert client.get(path, headers=bearer).status_code == 404, path
+        assert client.get("/openapi.json").status_code == 401
+        assert client.get("/openapi.json", headers=bearer).status_code == 200
 
 
 def _llm_settings_payload(base_url: str = "https://api.openai.com/v1") -> dict[str, object]:
@@ -230,6 +297,121 @@ def test_local_dev_can_write_llm_settings_when_api_key_unset(
     tmp_path,
 ) -> None:
     env_path = tmp_path / ".env"
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+
+    response = _local_client().put(
+        "/settings/llm",
+        json=_llm_settings_payload("https://api.openai.com/v1"),
+    )
+
+    assert response.status_code == 200
+    assert "OPENAI_BASE_URL=https://api.openai.com/v1" in env_path.read_text(encoding="utf-8")
+
+
+# ============================================================================
+# PUT /settings/llm: cross-site browser guard on require_settings_write_auth
+# ============================================================================
+
+
+def test_settings_write_rejects_cross_site_sec_fetch_site(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A cross-site browser PUT must not reach the settings-write logic."""
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+
+    response = _local_client().put(
+        "/settings/llm",
+        headers={"Host": "127.0.0.1:8899", "Sec-Fetch-Site": "cross-site"},
+        json=_llm_settings_payload("https://attacker.example/openai-compatible/v1"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Cross-site request denied"
+    assert not env_path.exists()
+
+
+def test_settings_write_rejects_cross_site_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """An Origin that is neither loopback nor the request host is cross-site."""
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+
+    response = _local_client().put(
+        "/settings/llm",
+        headers={"Host": "127.0.0.1:8899", "Origin": "https://attacker.example"},
+        json=_llm_settings_payload("https://attacker.example/openai-compatible/v1"),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Cross-site request denied"
+    assert not env_path.exists()
+
+
+def test_settings_write_same_origin_browser_passes_cross_site_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A same-origin browser PUT clears the guard and reaches the write path."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+
+    response = _local_client().put(
+        "/settings/llm",
+        headers={
+            "Host": "127.0.0.1:8899",
+            "Origin": "http://127.0.0.1:8899",
+            "Sec-Fetch-Site": "same-origin",
+        },
+        json=_llm_settings_payload("https://api.openai.com/v1"),
+    )
+
+    assert response.status_code == 200
+    assert "OPENAI_BASE_URL=https://api.openai.com/v1" in env_path.read_text(encoding="utf-8")
+
+
+def test_settings_write_remote_same_origin_passes_guard_and_hits_auth_layer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A host-matching Origin passes the guard; the later auth layer still decides."""
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(api_server, "ENV_PATH", env_path)
+    client = TestClient(
+        api_server.app,
+        base_url="http://192.168.1.10:8899",
+        client=("192.168.1.20", 50000),
+    )
+
+    response = client.put(
+        "/settings/llm",
+        headers={
+            "Host": "192.168.1.10:8899",
+            "Origin": "http://192.168.1.10:8899",
+            "Sec-Fetch-Site": "same-origin",
+        },
+        json=_llm_settings_payload("https://api.openai.com/v1"),
+    )
+
+    assert response.status_code == 403
+    assert (
+        response.json()["detail"]
+        == "Settings writes require API_AUTH_KEY or a local loopback client"
+    )
+    assert not env_path.exists()
+
+
+def test_settings_write_without_browser_headers_passes_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """A non-browser client (CLI/curl) sends no Origin and must pass the guard."""
+    env_path = tmp_path / ".env"
+    env_path.write_text("", encoding="utf-8")
     monkeypatch.setattr(api_server, "ENV_PATH", env_path)
 
     response = _local_client().put(

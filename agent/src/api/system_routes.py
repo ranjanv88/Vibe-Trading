@@ -10,7 +10,7 @@ import os
 import signal
 import threading
 import time
-from collections import defaultdict, deque
+from collections import deque
 from datetime import datetime, timezone
 from typing import Deque, Dict, Optional, Tuple
 
@@ -24,6 +24,8 @@ from fastapi import (
     Security,
     status,
 )
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
@@ -69,19 +71,50 @@ class _SlidingWindowRateLimiter:
     def __init__(self, max_requests: int, window_seconds: float) -> None:
         self._max = max_requests
         self._window = window_seconds
-        self._hits: Dict[str, Deque[float]] = defaultdict(deque)
+        self._hits: Dict[str, Deque[float]] = {}
         self._lock = threading.Lock()
+        self._last_sweep: float = 0.0
+
+    def _sweep_expired_locked(self, cutoff: float) -> None:
+        """Drop buckets whose entries have all expired. Caller holds the lock."""
+        stale_keys = [
+            k for k, b in self._hits.items()
+            if not b or b[0] < cutoff
+        ]
+        for k in stale_keys:
+            # Pop expired entries; if the bucket is empty, remove it.
+            b = self._hits[k]
+            while b and b[0] < cutoff:
+                b.popleft()
+            if not b:
+                del self._hits[k]
 
     def allow(self, key: str) -> bool:
         """Record a hit for ``key`` and report whether it stays within budget."""
         now = time.monotonic()
         cutoff = now - self._window
         with self._lock:
-            bucket = self._hits[key]
-            while bucket and bucket[0] < cutoff:
-                bucket.popleft()
-            if len(bucket) >= self._max:
+            if self._max <= 0:
                 return False
+            # Periodic sweep: clean up expired buckets so keys that were
+            # accessed once and never again do not accumulate without bound.
+            # Throttled to once per window to avoid sweeping on every call.
+            if now - self._last_sweep >= self._window:
+                self._sweep_expired_locked(cutoff)
+                self._last_sweep = now
+
+            bucket = self._hits.get(key)
+            if bucket is not None:
+                while bucket and bucket[0] < cutoff:
+                    bucket.popleft()
+                if len(bucket) >= self._max:
+                    return False
+                if not bucket:
+                    del self._hits[key]
+                    bucket = None
+            if bucket is None:
+                bucket = deque()
+                self._hits[key] = bucket
             bucket.append(now)
             return True
 
@@ -184,6 +217,7 @@ def register_system_routes(
 
     _security = host._security
     _require_shutdown_authorization = host._require_shutdown_authorization
+    _configured_api_key = host._configured_api_key
     require_auth = host.require_auth
     _app_version = app_version if app_version is not None else host.APP_VERSION
 
@@ -344,9 +378,13 @@ def register_system_routes(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-    @app.get("/skills")
+    @app.get("/skills", dependencies=[Depends(require_auth)])
     async def list_skills():
-        """List registered skills (name and description)."""
+        """List registered skills (name and description).
+
+        Authenticated: the skill inventory describes the agent's installed
+        capabilities and is not appropriate pre-auth reconnaissance material.
+        """
         from src.agent.skills import SkillsLoader
 
         loader = SkillsLoader()
@@ -367,3 +405,64 @@ def register_system_routes(
             "docs": "/docs",
             "health": "/health",
         }
+
+    # --- API documentation ---
+    #
+    # ``api_server`` constructs the app with ``docs_url``/``redoc_url``/
+    # ``openapi_url`` set to ``None`` and delegates here so the schema and its
+    # schema sits behind ``require_auth``. It enumerates every route -- including
+    # the live-trading and mandate control plane -- so an unauthorized peer must
+    # not be able to read it.
+    #
+    # A browser navigation cannot attach a Bearer header before Swagger's
+    # ``Authorize`` control loads, and its initial schema fetch is unauthenticated
+    # too. Interactive docs therefore remain available only in keyless loopback
+    # dev mode. Keyed deployments return 404 for both viewers and expose the
+    # schema only to programmatic callers that send the Bearer header.
+
+    _openapi_url = "/openapi.json"
+
+    @app.get(_openapi_url, include_in_schema=False, dependencies=[Depends(require_auth)])
+    async def openapi_schema():
+        """Serve the OpenAPI schema to authorized callers only."""
+        return JSONResponse(app.openapi())
+
+    # Favicons point at the SPA's self-hosted asset rather than FastAPI's
+    # default remote one, so the docs CSP exception does not have to widen
+    # ``img-src`` to a third-party host.
+    _docs_favicon = "/favicon.svg"
+
+    @app.get("/docs", include_in_schema=False)
+    async def swagger_ui(
+        request: Request,
+        cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+    ):
+        """Serve Swagger UI only in keyless loopback development mode."""
+        if _configured_api_key():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+        await require_auth(request, cred)
+        return get_swagger_ui_html(
+            openapi_url=_openapi_url,
+            title=f"{app.title} - Swagger UI",
+            swagger_favicon_url=_docs_favicon,
+        )
+
+    @app.get("/redoc", include_in_schema=False)
+    async def redoc_ui(
+        request: Request,
+        cred: Optional[HTTPAuthorizationCredentials] = Security(_security),
+    ):
+        """Serve ReDoc only in keyless loopback development mode."""
+        if _configured_api_key():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+        await require_auth(request, cred)
+        # ``with_google_fonts=False`` drops ReDoc's fonts.googleapis.com
+        # stylesheet, so the docs CSP exception stays limited to the bundle
+        # host instead of also allowing a font CDN. ReDoc falls back to system
+        # fonts and is otherwise unchanged.
+        return get_redoc_html(
+            openapi_url=_openapi_url,
+            title=f"{app.title} - ReDoc",
+            redoc_favicon_url=_docs_favicon,
+            with_google_fonts=False,
+        )

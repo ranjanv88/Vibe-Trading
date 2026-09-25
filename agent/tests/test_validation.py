@@ -121,6 +121,22 @@ class TestMonteCarlo:
         r2 = monte_carlo_test(trades, 1_000_000, n_simulations=100, seed=42)
         assert r1["p_value_sharpe"] == r2["p_value_sharpe"]
 
+    def test_actual_sharpe_respects_bars_per_year(self) -> None:
+        # actual_sharpe must annualise with the caller's bars_per_year, not a
+        # hardcoded 252 -- otherwise it silently disagrees with
+        # bootstrap_sharpe_ci's Sharpe on a crypto (365) or forex (260) run
+        # in the same validation report.
+        trades = _make_trades([100, -50, 200, -30, 150, -80, 120, -40, 90, -20])
+        default = monte_carlo_test(trades, 1_000_000, n_simulations=50, seed=1)
+        crypto = monte_carlo_test(
+            trades, 1_000_000, n_simulations=50, seed=1, bars_per_year=365
+        )
+        assert default["actual_sharpe"] != crypto["actual_sharpe"]
+        expected_ratio = (365 / 252) ** 0.5
+        assert crypto["actual_sharpe"] == pytest.approx(
+            default["actual_sharpe"] * expected_ratio, abs=1e-3
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bootstrap Sharpe CI
@@ -291,6 +307,20 @@ class TestRunValidation:
         assert "bootstrap" in result
         assert "monte_carlo" not in result
 
+    def test_monte_carlo_respects_run_validations_bars_per_year(self) -> None:
+        # run_validation resolves bars_per_year once and threads it into
+        # bootstrap/walk_forward already; monte_carlo must receive the same
+        # value instead of silently annualising at a hardcoded 252.
+        eq = _make_equity(100)
+        trades = _make_trades([100, -50, 200, -30, 150, -80, 120, -40, 90, -20])
+        config = {"validation": {"monte_carlo": {"n_simulations": 50, "seed": 1}}}
+        default = run_validation(config, eq, trades, 1_000_000, bars_per_year=252)
+        crypto = run_validation(config, eq, trades, 1_000_000, bars_per_year=365)
+        expected_ratio = (365 / 252) ** 0.5
+        assert crypto["monte_carlo"]["actual_sharpe"] == pytest.approx(
+            default["monte_carlo"]["actual_sharpe"] * expected_ratio, abs=1e-3
+        )
+
     @pytest.mark.parametrize(
         ("section", "field", "value"),
         [
@@ -406,3 +436,49 @@ def test_load_trades_blank_holding_days_defaults_to_zero(tmp_path: Path) -> None
     assert len(trades) == 1
     assert trades[0].holding_bars == 0
     assert trades[0].pnl == 10.0
+
+
+def test_load_trades_prefers_fill_derived_holding_bars(tmp_path: Path) -> None:
+    from backtest.validation import _load_trades
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "trades.csv").write_text(
+        "timestamp,code,side,price,qty,reason,pnl,holding_days,holding_bars,return_pct\n"
+        "2026-01-05,A,sell,100,3,target_rebalance,1,3,1.5,0.1\n",
+        encoding="utf-8",
+    )
+
+    trades = _load_trades(tmp_path)
+
+    assert trades[0].holding_bars == pytest.approx(1.5)
+
+
+class TestBarsPerYearNone:
+    """Cross-market convention (runner passes bars_per_year=None, #1237)."""
+
+    def test_run_validation_with_none_does_not_crash(self) -> None:
+        eq = _make_equity(100)
+        trades = _make_trades([100, -50, 200, -30, 150])
+        config = {
+            "validation": {
+                "monte_carlo": {"n_simulations": 20},
+                "bootstrap": {"n_bootstrap": 20},
+                "walk_forward": {"n_windows": 3},
+            }
+        }
+        result = run_validation(config, eq, trades, 1_000_000, bars_per_year=None)
+        assert "bootstrap" in result and "walk_forward" in result
+        # _sharpe's np.sqrt(bars_per_year) must have been fed an int, not None.
+        assert result["bootstrap"]["observed_sharpe"] is not None
+        assert result["walk_forward"]["sharpe_std"] is not None
+
+    def test_run_validation_with_none_degrades_empty_equity(self) -> None:
+        result = run_validation(
+            {"validation": {"bootstrap": {"n_bootstrap": 10}}},
+            _make_equity(1),
+            [],
+            1_000_000,
+            bars_per_year=None,
+        )
+        assert "bootstrap" in result

@@ -1,7 +1,7 @@
 """Read-only technical indicator tool.
 
-Computes RSI, MACD, Bollinger Bands, SMA, and EMA for a given symbol using the
-existing market-data pipeline. All computation is pure Python (numpy/pandas);
+Computes RSI, MACD, Bollinger Bands, SMA, EMA, and volume statistics for a given
+symbol using the existing market-data pipeline. All computation is pure Python (numpy/pandas);
 no new dependencies.
 """
 
@@ -17,6 +17,7 @@ import pandas as pd
 
 from src.agent.tools import BaseTool
 from src.market_data import fetch_market_data
+from src.tools.market_data_tool import _canonicalize_interval
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,114 @@ _ATR_PERIOD = 14
 _OBV_MA_PERIOD = 20
 _DEFAULT_LOOKBACK = 200
 _MAX_LOOKBACK = 500
+#: Calendar days fetched per requested bar. Two covers weekends and holidays
+#: for daily bars; a weekly or monthly bar needs its whole period, or 200
+#: weekly bars would be asked for over 400 days and come back as 57 (#1479).
+_CALENDAR_DAYS_PER_BAR = {"1W": 7, "1M": 31}
+
+
+_CLOSE_KEYS = ("close", "Close", "CLOSE", "adj_close")
+_VOLUME_KEYS = ("volume", "Volume", "VOLUME")
+_DATE_KEYS = ("trade_date", "date", "datetime", "timestamp", "time")
+
+
+def _extract_series(
+    payload: Any, keys: tuple[str, ...], *, keep_missing: bool = False
+) -> pd.Series | None:
+    """Extract one numeric column from a loader payload, on its dates.
+
+    Loader results can be a ``DataFrame``, a plain column mapping, or the
+    ``list[dict]`` shape returned by :func:`fetch_market_data`. Preserve a real
+    date index when one is available; a payload without dates intentionally
+    keeps a ``RangeIndex`` so callers do not report a row number as a date.
+
+    Args:
+        payload: The loader result for one symbol.
+        keys: Column spellings to look for, first match wins.
+        keep_missing: Keep a dated bar whose value is missing as NaN instead
+            of dropping it, so a gap cannot slide an older value into "latest".
+
+    Returns:
+        A float series, or ``None`` when the payload has no such column.
+    """
+    if isinstance(payload, list):
+        if not payload or not isinstance(payload[0], dict):
+            return None
+        frame = pd.DataFrame(payload)
+    elif isinstance(payload, dict):
+        inner = payload.get("data")
+        if isinstance(inner, list):
+            return _extract_series(inner, keys, keep_missing=keep_missing)
+        try:
+            frame = pd.DataFrame(payload)
+        except ValueError:
+            return None
+    elif isinstance(payload, pd.DataFrame):
+        frame = payload.copy()
+    else:
+        return None
+
+    key = next((key for key in keys if key in frame.columns), None)
+    if key is None:
+        return None
+
+    values = pd.to_numeric(frame[key], errors="coerce")
+    date_key = next((key for key in _DATE_KEYS if key in frame.columns), None)
+    if date_key is not None:
+        dates = pd.to_datetime(frame[date_key], errors="coerce")
+    elif isinstance(frame.index, pd.DatetimeIndex):
+        dates = pd.Series(frame.index, index=frame.index)
+    elif not isinstance(
+        frame.index, pd.RangeIndex
+    ) and not pd.api.types.is_integer_dtype(frame.index.dtype):
+        dates = pd.Series(
+            pd.to_datetime(frame.index, errors="coerce"), index=frame.index
+        )
+    else:
+        kept = values if keep_missing else values.dropna()
+        return kept.reset_index(drop=True).astype(float)
+
+    valid = dates.notna() if keep_missing else values.notna() & dates.notna()
+    normalized = pd.Series(
+        values.loc[valid].to_numpy(dtype=float),
+        index=pd.DatetimeIndex(dates.loc[valid]),
+        dtype=float,
+    )
+    return normalized.sort_index(kind="stable")
+
+
+def _extract_close_series(payload: Any) -> pd.Series | None:
+    """Extract the close-price series from a loader payload."""
+    return _extract_series(payload, _CLOSE_KEYS)
+
+
+def _extract_volume_series(payload: Any) -> pd.Series | None:
+    """Extract the volume series, keeping a dated bar with no volume as NaN."""
+    return _extract_series(payload, _VOLUME_KEYS, keep_missing=True)
+
+
+def _compute_volume_stats(
+    volume: pd.Series, period: int = 20
+) -> dict[str, float | None]:
+    """Return latest volume, its trailing mean, and latest/mean ratio.
+
+    The trailing mean is reported only when the latest period bars all carry
+    finite volume values, so a missing bar cannot silently change the window.
+    """
+    if volume.empty:
+        return {"latest": None, "sma_20": None, "ratio_20": None}
+
+    latest_raw = volume.iloc[-1]
+    latest = float(latest_raw) if pd.notna(latest_raw) else None
+    window = volume.iloc[-period:]
+    sma = None
+    ratio = None
+    if len(window) == period and window.notna().all():
+        sma = float(window.mean())
+        if latest is not None and sma != 0:
+            ratio = float(latest / sma)
+
+    return {"latest": latest, "sma_20": sma, "ratio_20": ratio}
 
 
 def _compute_sma(close: pd.Series, period: int) -> float | None:
@@ -51,20 +160,21 @@ def _compute_ema(close: pd.Series, period: int) -> float | None:
 
 
 def _compute_rsi(close: pd.Series, period: int = _RSI_PERIOD) -> float | None:
-    """Relative Strength Index (Wilder EWM smoothing) over *period* bars.
+    """Relative Strength Index (Wilder smoothing) over *period* bars.
 
-    Uses Wilder's exponential smoothing (ewm(alpha=1/period)) rather than a
-    simple rolling mean — this matches how every major charting platform
-    computes RSI and avoids the lag/instability of the SMA variant.
+    Matches the Wilder-EWM convention already used for RSI elsewhere in this
+    codebase (``shadow_account/extractor.py``, ``shadow_account/scanner.py``,
+    ``skills/technical-basic/example_signal_engine.py``): a plain rolling mean
+    of gains/losses is a materially different, non-Wilder technique and used
+    to diverge from those siblings by several RSI points on ordinary data.
     """
     if len(close) < period + 1:
         return None
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = (-delta).clip(lower=0)
-    alpha = 1.0 / period
-    avg_gain = float(gain.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
-    avg_loss = float(loss.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period).mean().iloc[-1]
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period).mean().iloc[-1]
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -170,17 +280,21 @@ class TechnicalIndicatorTool(BaseTool):
     """Compute common technical indicators for a symbol.
 
     Fetches OHLCV data through the existing loader pipeline, then computes
-    RSI, MACD, Bollinger Bands, SMA, and EMA. All math is pure Python; no
-    new dependencies, no network calls beyond what the loaders already do.
+    RSI, MACD, Bollinger Bands, SMA, EMA, and volume statistics. All math is
+    pure Python; no new dependencies, no network calls beyond what the loaders
+    already do.
     """
 
     name = "technical_indicators"
     description = (
         "Compute common technical indicators (RSI, MACD, Bollinger Bands, "
         "SMA, EMA, ADX/DI, ATR%, OBV/volume) plus a composite trend signal "
-        "(bullish/bearish/neutral with strength and volume confirmation) for "
-        "a trading symbol. Uses the project's data loaders to fetch price "
-        "history, then computes indicators locally."
+        "(bullish/bearish/neutral with strength and volume confirmation) plus "
+        "latest/20-bar volume statistics for a trading symbol "
+        "(volume.unit is the serving source's declared unit -- lots or shares -- "
+        "or null when undeclared). "
+        "Uses the project's data loaders "
+        "to fetch price history, then computes indicators locally."
     )
     parameters = {
         "type": "object",
@@ -213,11 +327,21 @@ class TechnicalIndicatorTool(BaseTool):
 
     def execute(self, **kwargs: Any) -> str:
         symbol = str(kwargs.get("symbol", "")).strip()
-        interval = str(kwargs.get("interval", "1d")).strip()
+        requested_interval = str(kwargs.get("interval", "1d")).strip()
         lookback_raw = kwargs.get("lookback", _DEFAULT_LOOKBACK)
 
         if not symbol:
             return json.dumps({"ok": False, "error": "symbol is required"})
+        # The documented 1d / 1wk / 1mo spellings used to reach the loaders
+        # verbatim, and most of them know neither weekly spelling.
+        interval = _canonicalize_interval(requested_interval)
+        if interval is None:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"unsupported interval {requested_interval!r}; use 1d, 1wk or 1mo",
+                }
+            )
 
         try:
             lookback = int(lookback_raw)
@@ -227,7 +351,8 @@ class TechnicalIndicatorTool(BaseTool):
 
         # Fetch enough bars to cover the longest indicator window + buffer.
         end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=lookback * 2)).strftime("%Y-%m-%d")
+        days = lookback * _CALENDAR_DAYS_PER_BAR.get(interval, 2)
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
         try:
             data = fetch_market_data(
@@ -235,59 +360,73 @@ class TechnicalIndicatorTool(BaseTool):
                 start_date=start_date,
                 end_date=end_date,
                 interval=interval,
-                # Ask for ALL rows: stride sampling would silently corrupt
-                # indicator math (EMA/RSI need consecutive bars).
+                # Indicators require consecutive bars. ``max_rows=lookback``
+                # would make the shared helper even-stride sample long windows.
                 max_rows=0,
+                # For volume_unit: lots on the A-share sources, shares on the
+                # Yahoo family (#1062) -- 100x apart, and nothing to infer from.
+                include_provenance=True,
             )
         except Exception as exc:
             logger.debug("fetch_market_data failed for %s: %s", symbol, exc)
             return json.dumps({"ok": False, "error": f"Failed to fetch data: {exc}"})
 
         df = data.get(symbol)
-        if isinstance(df, dict) and "data" in df:
-            # cap_rows wrapper: {'rows':…, 'data': [...], …} — unwrap.
-            rows = df["data"]
-        elif isinstance(df, list):
-            # plain list of row dicts
-            rows = df
-        else:
-            rows = None
-        if rows is not None:
-            try:
-                import pandas as _pd
-
-                frame = _pd.DataFrame(rows)
-                if "trade_date" in frame.columns:
-                    frame["trade_date"] = _pd.to_datetime(frame["trade_date"])
-                    frame = frame.set_index("trade_date").sort_index()
-                df = frame
-            except Exception:  # noqa: BLE001
-                df = None
+        if df is None:
+            return json.dumps({"ok": False, "error": f"No data returned for {symbol}"})
+        if isinstance(df, pd.DataFrame) and df.empty:
+            return json.dumps({"ok": False, "error": f"No data returned for {symbol}"})
+        if isinstance(df, list) and not df:
+            return json.dumps({"ok": False, "error": f"No data returned for {symbol}"})
+        if isinstance(df, dict) and not df:
+            return json.dumps({"ok": False, "error": f"No data returned for {symbol}"})
+        if isinstance(df, dict) and df.get("truncated") is True:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "Indicator calculation requires consecutive, untruncated bars",
+                }
+            )
+        # Normalize list/wrapper payloads to a DataFrame so the full-OHLCV
+        # indicators (ADX/ATR/OBV) below see high/low/close whatever shape
+        # the loader returned.
+        if isinstance(df, list):
+            df = pd.DataFrame(df) if df and isinstance(df[0], dict) else None
+        elif isinstance(df, dict) and isinstance(df.get("data"), list):
+            df = pd.DataFrame(df["data"])
         if df is None or (hasattr(df, "empty") and df.empty):
             return json.dumps({"ok": False, "error": f"No data returned for {symbol}"})
-        if isinstance(df, pd.DataFrame) and len(df) > lookback:
-            df = df.tail(lookback)
 
-        close = df.get("close") if isinstance(df, pd.DataFrame) else None
-        if close is None:
-            # Some loaders return a dict-like structure; try common key names.
-            if hasattr(df, "to_dict"):
-                d = df.to_dict() if callable(df.to_dict) else dict(df)
-                for key in ("close", "Close", "CLOSE", "adj_close"):
-                    if key in d:
-                        close = pd.Series(d[key])
-                        break
-        if close is None:
+        close = _extract_close_series(df)
+        if close is None or close.empty:
             return json.dumps({"ok": False, "error": "No close price column in data"})
+        close = close.sort_index(kind="stable").tail(lookback)
 
-        if not isinstance(close, pd.Series):
-            close = pd.Series(close)
+        volume = _extract_volume_series(df)
+        if volume is not None:
+            volume = volume.sort_index(kind="stable")
+            if isinstance(close.index, pd.DatetimeIndex) and isinstance(
+                volume.index, pd.DatetimeIndex
+            ):
+                volume = volume.reindex(close.index)
+            else:
+                volume = volume.tail(len(close)).reset_index(drop=True)
+        volume_stats = (
+            _compute_volume_stats(volume)
+            if volume is not None
+            else {"latest": None, "sma_20": None, "ratio_20": None}
+        )
+        provenance = (data.get("_provenance") or {}).get(symbol)
+        volume_stats["unit"] = (
+            provenance.get("volume_unit") if isinstance(provenance, dict) else None
+        )
 
         # ── Compute indicators ────────────────────────────────────────────
         indicators: dict[str, Any] = {
             "rsi_14": _compute_rsi(close),
             "macd": _compute_macd(close),
             "bollinger": _compute_bollinger(close),
+            "volume": volume_stats,
         }
         for period in _SMA_PERIODS:
             indicators[f"sma_{period}"] = _compute_sma(close, period)
@@ -355,7 +494,11 @@ class TechnicalIndicatorTool(BaseTool):
             }
 
         latest_close = float(close.iloc[-1]) if len(close) > 0 else None
-        latest_date = str(close.index[-1])[:10] if hasattr(close, "index") and len(close) > 0 else None
+        latest_date = (
+            str(close.index[-1])[:10]
+            if isinstance(close.index, pd.DatetimeIndex) and len(close) > 0
+            else None
+        )
 
         return json.dumps(
             {

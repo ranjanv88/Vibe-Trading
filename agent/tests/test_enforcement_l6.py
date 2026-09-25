@@ -31,6 +31,7 @@ from src.live.mandate.model import (
 )
 from src.trading.connectors.robinhood.classification import ROBINHOOD_TOOL_CLASS
 from src.tools.mcp import MCPRemoteToolSpec
+from tests import robinhood_mcp_helpers as rh
 
 
 # --------------------------------------------------------------------------- #
@@ -114,6 +115,44 @@ def test_extractor_rejects_missing_or_ambiguous_fields() -> None:
     assert extract_order_intent("place_equity_order", {"symbol": "AAPL", "side": "buy", "instrument_type": "equity"}) is None
 
 
+def test_extractor_maps_limit_price() -> None:
+    """A buy limit's worst-case fill price must reach the
+    gate, which sizes the notional at the worse of quote and limit."""
+    intent = extract_order_intent(
+        "place_equity_order",
+        {"symbol": "AAPL", "side": "buy", "instrument_type": "equity",
+         "quantity": 5, "limit_price": 200.0},
+    )
+    assert intent is not None
+    assert intent.limit_price == pytest.approx(200.0)
+
+
+def test_extractor_limit_price_absent_is_none() -> None:
+    """No limit_price kwarg → market-order sizing (intent.limit_price None)."""
+    intent = extract_order_intent(
+        "place_equity_order",
+        {"symbol": "AAPL", "side": "buy", "instrument_type": "equity", "quantity": 5},
+    )
+    assert intent is not None
+    assert intent.limit_price is None
+
+
+def test_extractor_rejects_unparseable_limit_price() -> None:
+    """A present-but-unparseable limit price is forwarded to the broker verbatim
+    and cannot be priced → the whole intent is ambiguous → DENY (fail-closed)."""
+    assert extract_order_intent(
+        "place_equity_order",
+        {"symbol": "AAPL", "side": "buy", "instrument_type": "equity",
+         "quantity": 5, "limit_price": "not-a-price"},
+    ) is None
+    # Non-positive and NaN are equally unusable.
+    assert extract_order_intent(
+        "place_equity_order",
+        {"symbol": "AAPL", "side": "buy", "instrument_type": "equity",
+         "quantity": 5, "limit_price": 0},
+    ) is None
+
+
 # --------------------------------------------------------------------------- #
 # L6 — quantity-only quote derivation through the gate                         #
 # --------------------------------------------------------------------------- #
@@ -177,9 +216,9 @@ class _BrokerQuoteAdapter:
 
     def call_tool(self, remote_name: str, arguments: dict, *, local_name: str | None = None) -> dict:
         if remote_name == "get_equity_positions":
-            return {"positions": [], "status": "ok"}
+            return rh.positions([])
         if remote_name == "get_portfolio":
-            return {"equity": 100000.0, "status": "ok"}
+            return rh.portfolio(total_value="100000.00", cash="100000.00", buying_power="100000.00")
         if remote_name == "get_equity_quotes":
             self.quote_calls += 1
             return {"status": "ok", "results": [{"symbol": arguments.get("symbol"), "last_price": self._price}]}
@@ -196,9 +235,9 @@ class _NoBrokerQuoteAdapter:
 
     def call_tool(self, remote_name: str, arguments: dict, *, local_name: str | None = None) -> dict:
         if remote_name == "get_equity_positions":
-            return {"positions": [], "status": "ok"}
+            return rh.positions([])
         if remote_name == "get_portfolio":
-            return {"equity": 100000.0, "status": "ok"}
+            return rh.portfolio(total_value="100000.00", cash="100000.00", buying_power="100000.00")
         if remote_name == "get_equity_quotes":
             return {"status": "error", "error": "quotes unavailable"}
         self.order_calls.append({"remote": remote_name, "arguments": arguments})
@@ -273,3 +312,62 @@ def test_last_price_usd_fail_closed_on_loader_unavailable(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(enforcement, "_resolve_loader", _raise)
     assert enforcement.last_price_usd("AAPL", AssetClass.US_EQUITY) is None
+
+
+# --------------------------------------------------------------------------- #
+# Normalization must not drop security-relevant intent fields                  #
+# --------------------------------------------------------------------------- #
+
+
+def test_normalization_preserves_asset_class(live_runtime: Path) -> None:
+    """``_normalize_intent_notional`` rebuilds the intent; asset_class must survive.
+
+    ``check_mandate`` prefers an explicit ``intent.asset_class`` over the
+    instrument-type default (enforcement.py:524) precisely so a multi-market
+    connector's HK/A-share order buckets correctly. If the rebuild drops it, an
+    HK order falls back to the EQUITY default (us_equity) and passes a mandate
+    that permits only us_equity — a fail-open on the universe check.
+    """
+    _write_mandate(live_runtime, max_order_notional_usd=10_000.0)
+    guard = _guard(_BrokerQuoteAdapter(price=100.0))
+    intent = enforcement.OrderIntent(
+        symbol="0700.HK",
+        side="buy",
+        notional_usd=None,
+        quantity=10.0,
+        instrument_type=InstrumentType.EQUITY,
+        asset_class=AssetClass.HK_EQUITY,
+    )
+    normalized = guard._normalize_intent_notional(intent)
+    assert normalized is not None
+    assert normalized.asset_class is AssetClass.HK_EQUITY
+    # And the notional reconciliation it exists for still happened.
+    assert normalized.notional_usd == pytest.approx(1000.0)
+
+
+def test_normalization_preserves_a_none_asset_class(live_runtime: Path) -> None:
+    """The Robinhood extractor never sets one; None must stay None, not crash."""
+    _write_mandate(live_runtime, max_order_notional_usd=10_000.0)
+    guard = _guard(_BrokerQuoteAdapter(price=100.0))
+    intent = enforcement.OrderIntent(
+        symbol="AAPL",
+        side="buy",
+        notional_usd=None,
+        quantity=10.0,
+        instrument_type=InstrumentType.EQUITY,
+    )
+    normalized = guard._normalize_intent_notional(intent)
+    assert normalized is not None
+    assert normalized.asset_class is None
+
+
+@pytest.mark.parametrize("bad", ["inf", "1e999", float("inf"), "9" * 400])
+def test_extractor_rejects_non_finite_limit_price(bad) -> None:
+    """A limit price of Infinity (via overflow or 'inf' spellings) has no
+    finite worst case, so it must be DENIED at extraction — never allowed to
+    reach enforcement math or the audit records as an infinite notional."""
+    assert extract_order_intent(
+        "place_equity_order",
+        {"symbol": "AAPL", "side": "buy", "instrument_type": "equity",
+         "quantity": 5, "limit_price": bad},
+    ) is None

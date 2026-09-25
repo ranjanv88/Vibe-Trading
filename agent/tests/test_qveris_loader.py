@@ -148,14 +148,14 @@ class TestFetch:
 
     def test_returns_empty_without_availability_and_makes_no_http(self, monkeypatch):
         session = _install_session(monkeypatch, [])
-        assert qv.DataLoader().fetch(["AAPL.US"], "2024-01-01", "2024-01-31") == {}
+        assert qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31") == {}
         assert session.calls == []
 
     def test_free_mode_keeps_qveris_loader_unavailable(self, monkeypatch):
         _write_config(qv._CONFIG_PATH, enabled=True, api_key="sk_test", mode="free")
         session = _install_session(monkeypatch, [])
 
-        assert qv.DataLoader().fetch(["AAPL.US"], "2024-01-01", "2024-01-31") == {}
+        assert qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31") == {}
         assert session.calls == []
 
     def test_zero_budget_allows_search_but_blocks_paid_execute(self, monkeypatch):
@@ -166,7 +166,7 @@ class TestFetch:
         )
 
         result = qv.DataLoader().fetch(
-            ["AAPL.US"], "2024-01-01", "2024-01-31"
+            ["BTC-USDT"], "2024-01-01", "2024-01-31"
         )
 
         assert result == {}
@@ -197,10 +197,10 @@ class TestFetch:
         )
 
         result = qv.DataLoader().fetch(
-            ["AAPL.US", "MSFT.US"], "2024-01-01", "2024-01-31"
+            ["BTC-USDT", "ETH-USDT"], "2024-01-01", "2024-01-31"
         )
 
-        assert list(result) == ["AAPL.US"]
+        assert list(result) == ["BTC-USDT"]
         execute_calls = [call for call in session.calls if "/tools/execute" in call["url"]]
         assert len(execute_calls) == 1
 
@@ -239,10 +239,10 @@ class TestFetch:
             ],
         )
 
-        out = qv.DataLoader().fetch(["AAPL.US"], "2024-01-01", "2024-01-31")
+        out = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")
 
-        assert list(out) == ["AAPL.US"]
-        df = out["AAPL.US"]
+        assert list(out) == ["BTC-USDT"]
+        df = out["BTC-USDT"]
         assert list(df.columns) == ["open", "high", "low", "close", "volume"]
         assert df.index.name == "trade_date"
         assert isinstance(df.index, pd.DatetimeIndex)
@@ -255,7 +255,7 @@ class TestFetch:
         assert session.calls[1]["url"].endswith("/tools/execute?tool_id=cheap")
         execute_body = session.calls[1]["kwargs"]["json"]
         assert execute_body["search_id"] == "s_123"
-        assert execute_body["parameters"]["symbol"] == "AAPL"
+        assert execute_body["parameters"]["symbol"] == "BTC-USDT"
         assert execute_body["parameters"]["start_date"] == "2024-01-01"
         assert execute_body["parameters"]["end_date"] == "2024-01-31"
         assert execute_body["parameters"]["adjusted"] is True
@@ -290,10 +290,10 @@ class TestFetch:
             ],
         )
 
-        out = qv.DataLoader().fetch(["MSFT"], "2024-01-01", "2024-01-31")
+        out = qv.DataLoader().fetch(["ETH-USDT"], "2024-01-01", "2024-01-31")
 
-        assert list(out) == ["MSFT"]
-        assert pd.isna(out["MSFT"].loc["2024-01-02", "volume"])
+        assert list(out) == ["ETH-USDT"]
+        assert pd.isna(out["ETH-USDT"].loc["2024-01-02", "volume"])
         assert session.calls[2]["method"] == "get"
         assert session.calls[2]["url"] == "https://oss.qveris.cn/full.json"
         assert "Authorization" not in session.calls[2]["kwargs"]["headers"]
@@ -320,7 +320,7 @@ class TestFetch:
             ],
         )
 
-        assert qv.DataLoader().fetch(["AAPL"], "2024-01-01", "2024-01-31") == {}
+        assert qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31") == {}
         assert len(session.calls) == 1
 
     def test_date_filtering_and_ohlc_validation(self, monkeypatch):
@@ -345,7 +345,7 @@ class TestFetch:
             ],
         )
 
-        df = qv.DataLoader().fetch(["AAPL"], "2024-01-01", "2024-01-31")["AAPL"]
+        df = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")["BTC-USDT"]
 
         assert [d.strftime("%Y-%m-%d") for d in df.index] == ["2024-01-02"]
         assert df.loc["2024-01-02", "open"] == 2.0
@@ -354,7 +354,43 @@ class TestFetch:
     def test_invalid_date_range_raises(self):
         _write_config(qv._CONFIG_PATH)
         with pytest.raises(ValueError):
-            qv.DataLoader().fetch(["AAPL"], "2024-02-01", "2024-01-01")
+            qv.DataLoader().fetch(["BTC-USDT"], "2024-02-01", "2024-01-01")
+
+
+class TestParameterMapping:
+    def test_does_not_treat_indicators_as_end_date(self):
+        capability = {
+            "params": [
+                {"name": "startdate", "type": "string"},
+                {"name": "enddate", "type": "string"},
+                {"name": "interval", "type": "string", "enum": ["D", "daily"]},
+                {"name": "cps", "type": "string"},
+                {"name": "indicators", "type": "string"},
+                {"name": "metadata_to", "type": "string"},
+            ],
+            "examples": {
+                "sample_parameters": {
+                    "cps": "1",
+                    "indicators": "close",
+                    "metadata_to": "raw",
+                }
+            },
+        }
+
+        parameters = qv._build_parameters(
+            capability,
+            "600519.SH",
+            "2019-01-02",
+            "2019-12-31",
+            "1D",
+        )
+
+        assert parameters["startdate"] == "2019-01-02"
+        assert parameters["enddate"] == "2019-12-31"
+        assert parameters["interval"] == "D"
+        assert parameters["cps"] == "1"
+        assert parameters["indicators"] == "close"
+        assert parameters["metadata_to"] == "raw"
 
 
 class TestHttpClient:
@@ -413,9 +449,9 @@ class TestCapabilitySelection:
             ],
         )
 
-        data = qv.DataLoader().fetch(["AAPL"], "2024-01-01", "2024-01-31")
+        data = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")
 
-        assert "AAPL" in data
+        assert "BTC-USDT" in data
         execute_url = session.calls[1]["url"]
         assert "tiingo.core.eod.v1" in execute_url
 
@@ -449,9 +485,9 @@ class TestCapabilitySelection:
             ],
         )
 
-        data = qv.DataLoader().fetch(["AAPL"], "2024-01-01", "2024-01-31")
+        data = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")
 
-        assert "AAPL" in data
+        assert "BTC-USDT" in data
         assert "daily_bad" in session.calls[1]["url"]
         assert "daily_good" in session.calls[2]["url"]
 
@@ -482,10 +518,10 @@ class TestCapabilitySelection:
             ],
         )
 
-        data = qv.DataLoader().fetch(["AAPL"], "2024-01-01", "2024-01-31")
+        data = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")
 
-        assert "AAPL" in data
-        assert float(data["AAPL"]["close"].iloc[0]) == 1.5
+        assert "BTC-USDT" in data
+        assert float(data["BTC-USDT"]["close"].iloc[0]) == 1.5
         assert len(session.calls) == 2
 
 
@@ -500,3 +536,294 @@ def test_explicit_unavailable_qveris_does_not_fallback_to_network():
     with pytest.raises(NoAvailableSourceError) as excinfo:
         get_loader_cls_with_fallback("qveris")
     assert "qveris" in str(excinfo.value).lower()
+
+
+def test_adjusted_only_records_become_bars():
+    """A capability publishing only ``adj_*`` fields must still yield bars.
+
+    ``qveris_finance.mkt_bars_adjusted`` returns ``adj_open``/``adj_high``/
+    ``adj_low``/``adj_close`` plus ``adj_factor`` and no unadjusted price
+    fields, so every row failed the OHLC check and a billed call produced "no
+    parseable bars" (#1494).
+    """
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "adj_open": 1.0,
+                "adj_high": 1.2,
+                "adj_low": 0.9,
+                "adj_close": 1.1,
+                "adj_volume": 100,
+                "adj_factor": 1.0,
+            },
+            {
+                "date": "2024-01-03",
+                "adj_open": 1.1,
+                "adj_high": 1.3,
+                "adj_low": 1.0,
+                "adj_close": 1.25,
+                "adj_volume": 120,
+                "adj_factor": 1.0,
+            },
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert frame is not None
+    assert list(frame["close"]) == pytest.approx([1.1, 1.25])
+    assert list(frame["volume"]) == pytest.approx([100.0, 120.0])
+
+
+def test_a_bar_never_mixes_unadjusted_and_adjusted_levels():
+    """Unadjusted open/high/low with only ``adj_close`` is not a bar.
+
+    Accepting that record assembles raw price levels against an adjusted close
+    in a single bar, silently, under whatever caliber the source declares
+    (#1494).
+    """
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "open": 1.0,
+                "high": 1.2,
+                "low": 0.9,
+                "adj_close": 1.1,
+            }
+        ]
+    }
+
+    assert qv._result_to_frame(result, "2024-01-01", "2024-01-05") is None
+
+
+def test_unadjusted_fields_win_when_both_sets_are_present():
+    """A record carrying both sets keeps resolving to the unadjusted quartet."""
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "open": 1.0,
+                "high": 1.2,
+                "low": 0.9,
+                "close": 1.1,
+                "adj_open": 10.0,
+                "adj_high": 12.0,
+                "adj_low": 9.0,
+                "adj_close": 11.0,
+            }
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert frame is not None
+    assert float(frame["close"].iloc[0]) == pytest.approx(1.1)
+
+
+@pytest.mark.parametrize("volume_key", ["volume", "vol", "v", "5. volume", "6. volume"])
+def test_adjusted_bars_keep_volume_under_a_plain_volume_key(volume_key):
+    """Volume is not a price level, so an adjusted bar keeps a plain volume.
+
+    Splitting the alias tables on price *levels* made the table a unit for every
+    column, so an adjusted-price record naming its volume ``volume`` — the most
+    natural key, and ``6. volume`` is how Alpha Vantage labels its adjusted
+    series — resolved a complete price quartet and then silently reported a NaN
+    volume. ``_result_to_frame`` only drops NaN price rows, so the NaN reached
+    the frame and the loader cache.
+    """
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "adj_open": 1.0,
+                "adj_high": 1.2,
+                "adj_low": 0.9,
+                "adj_close": 1.1,
+                volume_key: 100,
+            }
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert frame is not None
+    assert float(frame["volume"].iloc[0]) == pytest.approx(100.0)
+
+
+def test_adjusted_volume_wins_over_a_plain_volume_key():
+    """When the adjusted family names its own volume, that one still wins."""
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "adj_open": 1.0,
+                "adj_high": 1.2,
+                "adj_low": 0.9,
+                "adj_close": 1.1,
+                "adj_volume": 200,
+                "volume": 100,
+            }
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert frame is not None
+    assert float(frame["volume"].iloc[0]) == pytest.approx(200.0)
+
+def test_an_unadjusted_bar_does_not_take_the_adjusted_volume():
+    """Split-adjusted volume is not on the scale of unadjusted prices.
+
+    With both price families present and only ``adj_volume`` named, the
+    unadjusted quartet wins (the documented preference) and its volume stays
+    NaN instead of borrowing the adjusted family's (#1527 follow-up).
+    """
+    result = {
+        "data": [
+            {
+                "date": "2024-01-02",
+                "open": 1.0,
+                "high": 1.2,
+                "low": 0.9,
+                "close": 1.1,
+                "adj_open": 2.0,
+                "adj_high": 2.2,
+                "adj_low": 1.9,
+                "adj_close": 2.1,
+                "adj_volume": 200,
+            }
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert frame is not None
+    assert float(frame["close"].iloc[0]) == pytest.approx(1.1)
+    assert frame["volume"].isna().all()
+
+
+def test_a_response_mixing_families_yields_no_bars():
+    """Per-record choice built one series from an unadjusted row and an
+    adjusted-only row: closes 11.0 then 1.1, two price levels in one series."""
+    result = {
+        "data": [
+            {"date": "2024-01-02", "open": 10.0, "high": 11.5, "low": 9.5, "close": 11.0, "volume": 5},
+            {"date": "2024-01-03", "adj_open": 1.0, "adj_high": 1.2, "adj_low": 0.9, "adj_close": 1.1},
+        ]
+    }
+
+    assert qv._result_to_frame(result, "2024-01-01", "2024-01-05") is None
+
+
+def test_a_response_whose_rows_carry_both_families_uses_the_unadjusted_one():
+    result = {
+        "data": [
+            {"date": d, "open": 10.0, "high": 11.0, "low": 9.0, "close": c,
+             "adj_open": 1.0, "adj_high": 1.1, "adj_low": 0.9, "adj_close": c / 10}
+            for d, c in (("2024-01-02", 10.5), ("2024-01-03", 10.7))
+        ]
+    }
+
+    frame = qv._result_to_frame(result, "2024-01-01", "2024-01-05")
+
+    assert list(frame["close"]) == pytest.approx([10.5, 10.7])
+
+
+class TestMarketsWithCorporateActions:
+    """Search rank ignores adjustment, so those markets are refused (#1494)."""
+
+    @pytest.mark.parametrize(
+        "code", ["600519.SH", "600519", "AAPL.US", "AAPL", "00700.HK", "RELIANCE.NS", "510300.SH"]
+    )
+    def test_refused_before_any_request(self, monkeypatch, code):
+        _write_config(qv._CONFIG_PATH)
+        session = _install_session(monkeypatch, [])
+
+        with pytest.raises(NoAvailableSourceError, match="#1494") as excinfo:
+            qv.DataLoader().fetch([code], "2024-01-01", "2024-01-31")
+
+        assert code in str(excinfo.value)
+        assert session.calls == []
+
+    def test_one_refused_symbol_refuses_the_request(self, monkeypatch):
+        _write_config(qv._CONFIG_PATH)
+        session = _install_session(monkeypatch, [])
+
+        with pytest.raises(NoAvailableSourceError) as excinfo:
+            qv.DataLoader().fetch(["BTC-USDT", "600519.SH"], "2024-01-01", "2024-01-31")
+
+        assert "600519.SH (a_share)" in str(excinfo.value)
+        assert "BTC-USDT" not in str(excinfo.value)
+        assert session.calls == []
+
+    @pytest.mark.parametrize("code", ["BTC-USDT", "EURUSD", "RB2410.SHFE", "^GSPC"])
+    def test_markets_with_nothing_to_adjust_still_search(self, monkeypatch, code):
+        _write_config(qv._CONFIG_PATH)
+        session = _install_session(monkeypatch, [_FakeResponse({"search_id": "s", "results": []})])
+
+        assert qv.DataLoader().fetch([code], "2024-01-01", "2024-01-31") == {}
+        assert [call["url"] for call in session.calls] == ["https://qveris.test/api/v1/search"]
+
+
+class TestQuotedCallCost:
+    """Only a flat per-call quote bounds a bill (#1494)."""
+
+    @pytest.mark.parametrize(
+        ("quote", "cost"),
+        [
+            ("24.2 credits", 24.2),
+            ("1 credits/call", 1.0),
+            ("5 credits per call", 5.0),
+            ("0.5 credit", 0.5),
+            ("1", 1.0),
+            ("0 credits", 0.0),
+            (3, 3.0),
+        ],
+    )
+    def test_a_flat_quote_is_its_price(self, quote, cost):
+        assert qv.quoted_call_cost(quote) == cost
+
+    @pytest.mark.parametrize(
+        "quote",
+        ["1 credits/result", "0.00132 credits/value", "1 credit per row", "1-24.2 credits/call", "-1", "free", None, True, float("nan")],
+    )
+    def test_any_other_quote_prices_as_unknown(self, quote):
+        assert qv.quoted_call_cost(quote) is None
+
+    def test_a_per_result_quote_is_skipped_and_a_flat_one_runs(self, monkeypatch, caplog):
+        _write_config(qv._CONFIG_PATH)
+        rows = {"data": [{"date": "2024-01-02", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 5}]}
+        session = _install_session(
+            monkeypatch,
+            [
+                _FakeResponse(
+                    {
+                        "search_id": "s",
+                        "results": [
+                            _capability("per_result", expected_cost="0.1 credits/result"),
+                            _capability("flat", expected_cost="5 credits/call"),
+                        ],
+                    }
+                ),
+                _FakeResponse({"success": True, "cost": 5.0, "result": rows}),
+            ],
+        )
+
+        out = qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31")
+
+        assert list(out) == ["BTC-USDT"]
+        executed = [call["url"] for call in session.calls if "/tools/execute" in call["url"]]
+        assert executed == ["https://qveris.test/api/v1/tools/execute?tool_id=flat"]
+
+    def test_a_lone_per_result_quote_bills_nothing(self, monkeypatch, caplog):
+        _write_config(qv._CONFIG_PATH)
+        session = _install_session(
+            monkeypatch,
+            [_FakeResponse({"search_id": "s", "results": [_capability("per_result", expected_cost="1 credits/result")]})],
+        )
+
+        assert qv.DataLoader().fetch(["BTC-USDT"], "2024-01-01", "2024-01-31") == {}
+        assert len(session.calls) == 1
+        assert "not a flat price per call" in caplog.text

@@ -16,12 +16,14 @@ is bounded, and POSIX behaviour is unchanged (a plain OSError without
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 
 import src.swarm.store as store_mod
 from src.swarm.models import SwarmRun
 from src.swarm.store import SwarmStore
+from tests.module_os_helpers import patch_module_os
 
 
 def _winerr(code: int) -> PermissionError:
@@ -53,7 +55,7 @@ def test_replace_retries_transient_winerror_then_succeeds(tmp_path, monkeypatch)
             raise _winerr(5)
         return real(src, dst, *a, **k)
 
-    monkeypatch.setattr(store_mod.os, "replace", flaky)
+    patch_module_os(monkeypatch, store_mod, replace=flaky)
 
     upd = _run()
     upd.final_report = "RETRIED-OK"
@@ -72,7 +74,7 @@ def test_non_transient_error_reraises_immediately(tmp_path, monkeypatch):
         calls["n"] += 1
         raise _winerr(2)  # ERROR_FILE_NOT_FOUND — NOT in the transient set
 
-    monkeypatch.setattr(store_mod.os, "replace", boom)
+    patch_module_os(monkeypatch, store_mod, replace=boom)
     with pytest.raises(OSError):
         store.update_run(_run())
     assert calls["n"] == 1, "non-transient must not be retried (no masking)"
@@ -87,7 +89,7 @@ def test_transient_budget_is_bounded(tmp_path, monkeypatch):
         calls["n"] += 1
         raise _winerr(32)  # ERROR_SHARING_VIOLATION, forever
 
-    monkeypatch.setattr(store_mod.os, "replace", always)
+    patch_module_os(monkeypatch, store_mod, replace=always)
     with pytest.raises(OSError):
         store.update_run(_run())
     assert calls["n"] == store_mod._REPLACE_ATTEMPTS
@@ -121,6 +123,77 @@ def test_load_run_missing_is_fast_none(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store_mod.SwarmRun, "model_validate_json", staticmethod(lambda *a, **k: fail_read()))
     assert store.load_run("does-not-exist") is None
+
+
+def test_concurrent_stores_writing_same_run_do_not_crash_or_clobber(tmp_path):
+    """mcp_server._get_swarm_store() builds a fresh SwarmStore per tool call,
+    so two pollers of the same run each hold their own _write_lock. A shared
+    ".tmp" name let one writer's rename consume the other's unwritten temp
+    file, raising FileNotFoundError for the loser (or silently discarding
+    the winner's own content). Neither writer should ever raise here, and
+    the surviving content must be one writer's whole payload, never a mix.
+    """
+    store_a = SwarmStore(base_dir=tmp_path)
+    store_b = SwarmStore(base_dir=tmp_path)
+    store_a.create_run(_run())
+
+    run_a = _run()
+    run_a.final_report = "FROM-A"
+    run_b = _run()
+    run_b.final_report = "FROM-B"
+
+    start_gate = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def write(store: SwarmStore, run: SwarmRun) -> None:
+        start_gate.wait()
+        try:
+            store.update_run(run)
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            errors.append(exc)
+
+    t_a = threading.Thread(target=write, args=(store_a, run_a))
+    t_b = threading.Thread(target=write, args=(store_b, run_b))
+    t_a.start()
+    t_b.start()
+    t_a.join()
+    t_b.join()
+
+    assert not errors, f"concurrent update_run raised: {errors!r}"
+    assert store_a.load_run("r").final_report in {"FROM-A", "FROM-B"}
+
+
+def test_concurrent_task_stores_saving_one_task_do_not_crash(tmp_path):
+    """The TaskStore sibling of the SwarmStore race (#1536): two workers writing
+    the same task file each used ``task-<id>.tmp``, so one rename could consume
+    the other's temp file and raise FileNotFoundError."""
+    from src.swarm.models import SwarmTask
+    from src.swarm.task_store import TaskStore
+
+    errors: list[Exception] = []
+
+    def write(store: TaskStore, task: SwarmTask, gate: threading.Barrier) -> None:
+        gate.wait()
+        try:
+            for _ in range(20):
+                store.save_task(task)
+        except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+            errors.append(exc)
+
+    task = SwarmTask(id="t1", agent_id="analyst", prompt_template="do x")
+    for _ in range(10):
+        gate = threading.Barrier(2)
+        threads = [
+            threading.Thread(target=write, args=(TaskStore(tmp_path), task, gate)) for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert not errors, f"concurrent save_task raised: {errors[:3]!r}"
+    assert TaskStore(tmp_path).load_task("t1").id == "t1"
+    assert not list((tmp_path / "tasks").glob("*.tmp")), "a temp file was left behind"
 
 
 def test_posix_oserror_is_not_treated_transient():
