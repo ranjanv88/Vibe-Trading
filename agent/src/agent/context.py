@@ -23,6 +23,14 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = """You are a finance research agent with {skill_count} specialist skills, {tool_count} tools, {data_source_count} data sources (with auto-fallback), and 29 multi-agent swarm teams.
 You handle backtesting, factor analysis, options pricing, risk audits, research reports, document/web reading, web search, and team-based workflows.
 
+File operations are reported from their actual tool outcomes. A successful
+write_file result confirms the returned path and byte count; an earlier error
+for another path does not override it. A rejected path is not evidence that
+all external folders are forbidden. Use the allowed roots named in the error.
+For a requested PDF, pass Markdown/text to write_file with a .pdf path and
+include its returned download_url in the final answer. Do not save plain text
+with a .pdf extension or claim a write failed when its result says status ok.
+
 ## Output Principles
 
 These six principles define what your output is. They hold for every answer in
@@ -70,10 +78,6 @@ skill document, not recalled memory. They are not defaults to be tuned.
 ## Skills (use load_skill to read full docs)
 
 {skill_descriptions}
-
-## State
-
-{memory_summary}
 
 ## Task Routing
 
@@ -195,14 +199,28 @@ Decide which workflow to use based on the request:
   PE ratio (`ref`: the tool name such as `get_fundamentals`, or its call id). For
   a metric whose identity matters (VaR vs ES, 95% vs 99%), use the result field
   as `ref`: `data.tail_risk.var_95` or just `var_95` from `portfolio_risk_xray`,
-  `historical_var` from `quantlib_call`. When more than one call returned that
-  field (historical_var at 95% and at 99%), name the call: `q1::historical_var`.
+  `historical_var` from `quantlib_call`. When more than one call returned the
+  same field, name the exact call as `call_id::field` (for example
+  `<call_id>::historical_var`), where `<call_id>` is the tool_call_id of that
+  tool result copied verbatim; never invent a short alias. A tool name is not
+  a call id.
+  Each element of a list is its own field: address it by index,
+  `call_id::data.positions[0].contribution_pct` (`positions.0.contribution_pct`
+  is read the same way). A field name without the index does not select an
+  element, and one element's ref never grounds another element's value.
+  A ref that names a list or object (`data.groups.positive`) grounds nothing;
+  end it at the numeric field of the element you quote.
   Once this session holds more than one tail-risk measurement (a VaR and an ES,
   or 95% and 99%), EVERY tail-risk figure needs that field ref — a call id or no
   declaration at all cannot say which of them you are quoting, and the figure is
-  sent back for correction;
+  sent back for correction.
+  A backtest's output (its metrics, weights, trades, p-values, final value) is
+  `observed` with the backtest's run directory as `ref`, e.g. `rp`, or the file
+  you read, e.g. `rp/artifacts/target_positions.csv`; two backtests are two
+  directories, so a comparison names each one (`rp::sharpe`, `ew::sharpe`);
   `derived` — arithmetic on observed values (`note`: the formula; every number
-  added or subtracted must itself be an observed value);
+  added or subtracted must itself be an observed value; `ref`: where the
+  operands came from, e.g. `rp, ew` for a difference between two backtests);
   `proposed` — a price level you suggest, such as an entry, stop or target: inside
   the observed price range, or with a formula over observed values in `note`; a
   percentage is not a level, so state the price it implies;
@@ -323,7 +341,6 @@ class ContextBuilder:
             data_source_count=self._count_data_sources(),
             tool_descriptions=self._format_tool_descriptions(),
             skill_descriptions=self.skills_loader.get_descriptions(),
-            memory_summary=self.memory.to_summary(),
             memory_section=memory_section,
             strategy_discovery_routing=routing,
             current_datetime=now.strftime("%A, %B %d, %Y %H:%M UTC"),
@@ -352,6 +369,11 @@ class ContextBuilder:
         user message as context. This keeps the system prompt stable (cacheable)
         while providing per-query relevant memories.
 
+        Volatile workspace state (run_dir, tool counters) is injected the same
+        way: run_dir changes on every run and counters change on every tool
+        call, so rendering them into the system prompt invalidated the provider
+        prefix cache on every turn (issue #1707).
+
         Args:
             user_message: User message.
             history: Prior conversation messages.
@@ -379,6 +401,16 @@ class ContextBuilder:
                     )
             except Exception as exc:
                 logger.debug("Auto-recall failed: %s", exc)
+
+        # Volatile workspace state rides in the first user message so the
+        # system prompt stays byte-stable across turns (prefix cache stays
+        # valid). Same envelope convention as recalled-memories above.
+        state_summary = self.memory.to_summary()
+        if state_summary and state_summary != "(empty state)":
+            enriched = (
+                f"<agent-state>\n{state_summary}\n</agent-state>\n\n"
+                f"{enriched}"
+            )
 
         messages.append({"role": "user", "content": enriched})
         return messages
@@ -425,6 +457,7 @@ class ContextBuilder:
         tool_calls: list,
         content: Optional[str] = None,
         reasoning_content: Optional[str] = None,
+        provider_items: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Format an assistant tool_calls message, preserving thinking text.
 
@@ -435,6 +468,9 @@ class ContextBuilder:
             reasoning_content: Provider-specific reasoning field (Kimi K2.5,
                 DeepSeek reasoner, Qwen thinking). Only attached to the output
                 message when not None, so non-thinking providers see no change.
+            provider_items: Opaque items the provider must receive back verbatim
+                with this turn (Codex encrypted reasoning). Attached only when
+                non-empty; only the adapter that produced them reads them.
 
         Returns:
             OpenAI-format assistant message.
@@ -467,4 +503,6 @@ class ContextBuilder:
             }
         if reasoning_content is not None:
             message["reasoning_content"] = reasoning_content
+        if provider_items:
+            message["provider_items"] = list(provider_items)
         return message

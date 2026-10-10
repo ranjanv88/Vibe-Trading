@@ -1,23 +1,55 @@
 {
   "app": {
-    "version": "v0.1.15"
+    "version": "v0.1.16"
   },
   "charts": {
     "noPriceData": "Ainda não há dados de preço para este símbolo",
     "noCorrelationData": "Escolha pelo menos dois símbolos para comparar",
     "noEquityData": "Ainda não há curva de valor da conta – execute primeiro um backtest"
   },
+  "navigation": {
+    "menu": "Explorar recursos",
+    "close": "Fechar menu de recursos",
+    "groups": {
+      "research": "Pesquisa cotidiana",
+      "analysis": "Análise especializada",
+      "automation": "Automação e configuração"
+    },
+    "howTo": "Como usar {{feature}}",
+    "startResearch": "Comece com o assistente de pesquisa",
+    "descriptions": {
+      "agent": "Faça uma pergunta de pesquisa ou descreva uma estratégia com suas palavras.",
+      "reports": "Veja e compare backtests concluídos.",
+      "portfolio": "Veja saldos e posições das contas conectadas.",
+      "alphaZoo": "Explore sinais de seleção de ações e avalie ou compare o desempenho histórico.",
+      "optionsLab": "Monte estratégias de opções, explore ganhos e riscos e consulte cadeias de opções dos EUA.",
+      "correlation": "Compare como os ativos se movimentam juntos.",
+      "scheduled": "Repita uma pesquisa em horários definidos.",
+      "runtime": "Confira conexões de corretoras e o estado de execução das operações.",
+      "settings": "Configure modelos, fontes de dados e conexões de corretoras."
+    },
+    "instructions": {
+      "reports": "Primeiro peça ao assistente um backtest de uma estratégia e abra os resultados aqui. Baixe PDFs e documentos gerados no chat na conversa original.",
+      "portfolio": "Adicione e habilite uma fonte de conta e atualize as posições. Esta página resume os dados das contas em modo somente leitura.",
+      "alphaZoo": "Leia a definição do fator e escolha mercado e período para avaliar ou comparar sinais. Valide os candidatos com um backtest.",
+      "optionsLab": "Escolha uma predefinição ou adicione pernas de opções e ajuste preço, vencimento e volatilidade; os resultados se atualizam automaticamente. O código da cadeia real é separado das entradas da simulação.",
+      "correlation": "Informe pelo menos dois códigos de ativos, escolha o período e clique em Calcular.",
+      "scheduled": "Informe a instrução de pesquisa, escolha a frequência e salve. O agendador local deve estar habilitado para executar tarefas; a entrega também requer um canal configurado.",
+      "runtime": "Primeiro configure uma conexão de corretora em Configurações ou Carteira. As operações disponíveis dependem dos recursos da corretora e da sua autorização.",
+      "settings": "Configure um modelo para começar. Adicione dados ou conexões de corretoras conforme necessário; pesquisas com dados públicos de mercado não exigem conta em corretora."
+    }
+  },
   "layout": {
     "home": "Início",
-    "agent": "Agente",
-    "runtime": "Runtime",
-    "scheduled": "Agendado",
-    "reports": "Relatórios",
-    "portfolio": "Portfólio",
-    "alphaZoo": "Alpha Zoo",
+    "agent": "Assistente de pesquisa",
+    "runtime": "Estado das operações",
+    "scheduled": "Pesquisa agendada",
+    "reports": "Relatórios de backtest",
+    "portfolio": "Posições das contas",
+    "alphaZoo": "Pesquisa de fatores",
     "settings": "Configurações",
-    "correlation": "Matriz de Correlação",
-    "optionsLab": "Laboratório de opções",
+    "correlation": "Correlação de ativos",
+    "optionsLab": "Análise de opções",
     "sessions": "Sessões",
     "newChat": "Novo chat",
     "noSessions": "Ainda não há chats — pressione + para iniciar um.",
@@ -33,7 +65,8 @@
     "skipToMain": "Pular para o conteúdo principal",
     "sidebar": "Barra lateral Vibe-Trading",
     "mainNavigation": "Navegação principal",
-    "about": "Sobre"
+    "about": "Sobre",
+    "sessionsLoadFailed": "Não foi possível carregar as conversas."
   },
   "runtime": {
     "monitorBadge": "Monitor de Runtime",
@@ -148,6 +181,23 @@
     "advancedHint": "Uma expressão cron de 5 campos avaliada no fuso horário selecionado (minuto hora dia mês dia da semana; listas e intervalos permitidos) ou um intervalo simples em milissegundos.",
     "timezoneLabel": "Fuso horário",
     "create": "Agendar execução",
+    "saveChanges": "Salvar alterações",
+    "cancelEdit": "Cancelar edição",
+    "editingHint": "Você está editando esta execução agendada. Ao salvar, a identidade e o histórico de execuções são preservados.",
+    "edit": "Editar",
+    "editAria": "Editar execução agendada: {{prompt}}",
+    "editRunningDisabled": "Aguarde a execução ou a entrega terminar antes de editar.",
+    "deliveryInApp": "Manter apenas no Vibe (não enviar)",
+    "deliveryNoChannels": "Nenhum canal de entrega habilitado está configurado. Configure um em Configurações → Canais.",
+    "deliveryChannelsLoadFailed": "Não foi possível carregar os canais de entrega configurados.",
+    "deliveryChannelUnavailable": "{{channel}} (indisponível no momento)",
+    "deliveryTargetKind_destination": "Destino",
+    "deliveryTargetKind_email_address": "Endereço de e-mail do destinatário",
+    "deliveryTargetKind_chat": "Chat",
+    "deliveryTargetKind_channel": "Canal",
+    "deliveryTargetDisabled": "Escolha primeiro um canal de entrega.",
+    "deliverySummary": "{{channel}} → {{target}}",
+    "deliveryUnknownTarget": "Destino configurado",
     "promptRequired": "Insira um prompt de pesquisa antes de agendar.",
     "invalidTime": "Insira um horário válido como HH:MM.",
     "executorHint": "As execuções são executadas somente quando o servidor é iniciado com VIBE_TRADING_ENABLE_SCHEDULER ativado.",
@@ -190,6 +240,16 @@
     "deliveryChannelPlaceholder": "telegram, feishu,… (deixe em branco para manter os resultados no aplicativo)",
     "deliveryTargetLabel": "Segmentação do canal",
     "deliveryTargetPlaceholder": "chat / grupo / ID de usuário",
+    "deliveryFormatLabel": "Email report format",
+    "deliveryFormatDefault": "Channel default (plain text)",
+    "deliveryFormatHtml": "HTML email",
+    "deliveryFormatPdf": "PDF attachment",
+    "proposalPdfProtection": "Proteção do PDF por senha",
+    "proposalPdfProtectionOn": "Ativada",
+    "proposalPdfProtectionOff": "Desativada",
+    "deliveryFormatDefaultHint": "Keeps the existing plain-text delivery behavior.",
+    "deliveryFormatHtmlHint": "Shows the full report as sanitized HTML in the email body.",
+    "deliveryFormatPdfHint": "Attaches the full report as PDF and keeps only a short notice in the body.",
     "deliveryHint": "Desativado por padrão. Um briefing é enviado assim que a execução termina, não quando está agendada.",
     "deliveryTargetRequired": "Escolha um alvo para esse canal ou limpe o canal.",
     "delivery_none": "Entregando para {{channel}} após a próxima execução",
@@ -202,7 +262,18 @@
     "verdictUnreadable": "Último veredicto ilegível",
     "verdictNoCalls": "Sem chamadas",
     "verdictDelta": "{{was}} → {{now}}",
-    "verdictRecorded": "a partir de {{when}}"
+    "verdictRecorded": "a partir de {{when}}",
+    "deliveryKnownTargetLabel": "Destino conhecido",
+    "deliveryKnownTargetPlaceholder": "Escolher um destino conhecido…",
+    "deliverySuggestionKind_private_chat": "Meu chat privado",
+    "deliveryTargetPlaceholder_email_address": "name@example.com",
+    "deliveryTargetPlaceholder_chat": "ID do chat, grupo ou usuário",
+    "deliveryTargetPlaceholder_channel": "ID do canal",
+    "deliveryTargetPlaceholder_destination": "chat / grupo / ID de usuário",
+    "deliveryTargetPlaceholder_slack_destination": "#canal, @usuário ou ID da conversa",
+    "deliveryTargetKind_slack_destination": "Destino",
+    "deliveryProtectPdf": "Proteger PDF com senha",
+    "deliveryProtectPdfUnavailable": "Nenhuma senha de PDF foi configurada. Defina uma em Configurações > Canais > E-mail para ativar a proteção."
   },
   "reports": {
     "badge": "Relatórios",
@@ -222,7 +293,7 @@
     "unavailable": "Biblioteca de relatórios indisponível",
     "loadError": "Não foi possível carregar relatórios.",
     "emptyTitle": "Ainda não há relatórios",
-    "emptyBody": "Crie um backtest do Agente e retorne aqui para revisá-lo.",
+    "emptyBody": "Peça ao assistente de pesquisa um backtest e volte aqui para ver os resultados.",
     "noMatchesTitle": "Nenhum relatório correspondente",
     "noMatchesBody": "Ajuste sua consulta de pesquisa, filtro de status ou intervalo de datas.",
     "noPrompt": "Nenhum prompt registrado.",
@@ -236,9 +307,22 @@
   "connection": {
     "reconnecting": "Reconectando…",
     "disconnected": "Conexão perdida. Recarregue a página para reconectar.",
-    "reload": "Recarregar"
+    "reload": "Recarregar",
+    "retry": "Tentar conexão novamente",
+    "requestFailed": "Não foi possível conectar ao servidor API. Verifique se ele está em execução e se há conexão de rede.",
+    "requestTimeout": "A solicitação excedeu o tempo limite. Verifique a conexão com o servidor e tente novamente.",
+    "requestTimeoutMutation": "A solicitação excedeu o tempo limite. O servidor ainda pode estar processando; verifique o estado atual antes de tentar novamente."
   },
   "welcome": {
+    "tasks": {
+      "research": "Pesquisar uma ação",
+      "backtest": "Testar uma estratégia",
+      "portfolio": "Revisar minhas posições",
+      "hint": "Os exemplos preenchem a mensagem. Edite o código ou a estratégia antes de enviar.",
+      "researchPrompt": "Pesquise AAPL com os dados atuais disponíveis: resuma o negócio, os resultados financeiros recentes e os principais riscos. Informe fontes, datas e informações ausentes.",
+      "backtestPrompt": "Faça um backtest da estratégia de médias móveis de 20/60 dias de AAPL no último ano. Compare retorno e quedas com comprar e manter, incluindo custos de negociação. Apenas pesquisa.",
+      "portfolioPrompt": "Resuma minhas contas conectadas e posições, concentração e riscos da carteira. Se não houver conta conectada, explique primeiro como configurar uma. Não envie nem altere ordens."
+    },
     "categories": {
       "multiMarketBacktest": "Backtest em múltiplos mercados",
       "researchAnalysis": "Pesquisa e Análise",
@@ -433,6 +517,10 @@
         "save": "Salvar configuração",
         "hotApply": "Salvar é aplicado imediatamente — não é preciso reiniciar.",
         "saved": "Configuração do canal salva",
+        "appliedInPlace": "Configurações salvas sem reconectar o canal.",
+        "appliedReset": "Configurações salvas. As conexões dos canais foram reiniciadas.",
+        "appliedOnStart": "Configurações salvas. As alterações serão aplicadas quando os canais iniciarem.",
+        "appliedReconnect": "Configurações salvas. Este canal foi reconectado.",
         "saveFailed": "Falha ao salvar a configuração do canal: {{message}}",
         "test": "Testar conexão",
         "testing": "Testando…",
@@ -650,6 +738,14 @@
           "max_attachments_per_email": {
             "label": "Máx. de anexos por e-mail",
             "help": "Quantos anexos são aceitos em um único e-mail (padrão 5)."
+          },
+          "trusted_authserv_id": {
+            "label": "Servidor de autenticação confiável",
+            "help": "authserv-id do servidor receptor, por exemplo mx.google.com. O provedor deve remover cabeçalhos Authentication-Results recebidos e forjados com esse ID. Obrigatório ao verificar SPF ou DKIM; vazio rejeita emails recebidos."
+          },
+          "pdf_password": {
+            "label": "Senha do relatório PDF",
+            "help": "Senha opcional para relatórios PDF agendados que solicitem proteção explicitamente. Armazenada no servidor e nunca incluída nas tarefas agendadas nem retornada ao navegador."
           }
         },
         "websocket": {
@@ -717,6 +813,160 @@
             "label": "Caminho da chave TLS",
             "help": "Caminho da chave privada PEM no servidor para WSS. Defina certificado e chave juntos ou nenhum dos dois; são caminhos de arquivo no servidor, não material enviado por upload."
           }
+        },
+        "feishu": {
+          "app_id": {
+            "label": "App ID",
+            "help": "O App ID do aplicativo no console de desenvolvedores da Feishu / Lark (começa com cli_)."
+          },
+          "app_secret": {
+            "label": "App Secret",
+            "help": "O App Secret do aplicativo. Armazenado no servidor e nunca devolvido ao navegador."
+          },
+          "encrypt_key": {
+            "label": "Encrypt Key",
+            "help": "O Encrypt Key das configurações de assinatura de eventos; opcional no modo de conexão contínua."
+          },
+          "verification_token": {
+            "label": "Verification Token",
+            "help": "O Verification Token das configurações de assinatura de eventos; opcional no modo de conexão contínua."
+          },
+          "allow_from": {
+            "label": "Remetentes permitidos",
+            "help": "Lista de permissão opcional com IDs de remetentes do Feishu autorizados a falar com o agente; vazia permite todos que o bot consegue ver."
+          },
+          "react_emoji": {
+            "label": "Emoji de processamento",
+            "help": "Emoji reagido à mensagem recebida enquanto o agente trabalha (padrão THUMBSUP)."
+          },
+          "done_emoji": {
+            "label": "Emoji de conclusão",
+            "help": "Emoji reagido quando a tarefa é concluída; vazio para nenhum."
+          },
+          "tool_hint_prefix": {
+            "label": "Prefixo das dicas de ferramentas",
+            "help": "Prefixo exibido antes das dicas de ferramentas em linha na resposta."
+          },
+          "group_policy": {
+            "label": "Política de grupos",
+            "help": "\"mention\" responde apenas quando o bot é mencionado em grupos; \"open\" responde a todas as mensagens do grupo."
+          },
+          "reply_to_message": {
+            "label": "Citar a mensagem original",
+            "help": "Responder citando a mensagem original."
+          },
+          "streaming": {
+            "label": "Respostas em streaming",
+            "help": "Transmitir a resposta com edições ao vivo do cartão via CardKit."
+          },
+          "domain": {
+            "label": "Domínio",
+            "help": "\"feishu\" para Feishu China (open.feishu.cn), \"lark\" para o Lark internacional (open.larksuite.com)."
+          },
+          "topic_isolation": {
+            "label": "Sessões por tópico",
+            "help": "Dar a cada tópico do grupo sua própria sessão do agente."
+          }
+        },
+        "slack": {
+          "bot_token": {
+            "label": "Token do bot (xoxb-)",
+            "help": "O token OAuth do usuário bot do Slack (começa com xoxb-). Armazenado no servidor e nunca devolvido ao navegador."
+          },
+          "app_token": {
+            "label": "Token do app (xapp-)",
+            "help": "O token em nível de aplicativo do Slack (começa com xapp-) com o escopo connections:write, necessário para o Socket Mode. Armazenado no servidor e nunca devolvido ao navegador."
+          },
+          "user_token_read_only": {
+            "label": "Token do usuário somente leitura",
+            "help": "Sinalizador de comportamento, não uma credencial: mantém o acesso por token do usuário como somente leitura."
+          },
+          "reply_in_thread": {
+            "label": "Responder na thread",
+            "help": "Responder em uma thread sob a mensagem original em vez de publicar diretamente no canal."
+          },
+          "react_emoji": {
+            "label": "Emoji de processamento",
+            "help": "Emoji adicionado como reação a uma mensagem recebida enquanto o agente trabalha (padrão eyes)."
+          },
+          "done_emoji": {
+            "label": "Emoji de conclusão",
+            "help": "Emoji adicionado como reação quando a tarefa é concluída (padrão white_check_mark). Deixe vazio para nenhum."
+          },
+          "include_thread_context": {
+            "label": "Incluir contexto da thread",
+            "help": "Anexar as respostas anteriores da thread como contexto na primeira vez que o bot é incluído nela."
+          },
+          "thread_context_limit": {
+            "label": "Limite de contexto da thread",
+            "help": "Número máximo de mensagens da thread incluídas como contexto (padrão 20)."
+          },
+          "allow_from": {
+            "label": "Remetentes permitidos",
+            "help": "Lista de permissão com IDs de usuário do Slack autorizados a falar com o agente. O acesso a DMs e canais também é controlado pela política de DM e pela política de grupos."
+          },
+          "group_policy": {
+            "label": "Política de grupos",
+            "help": "\"mention\" responde apenas quando o bot é mencionado em um canal, \"open\" responde a todas as mensagens do canal, \"allowlist\" responde apenas nos canais listados abaixo."
+          },
+          "group_allow_from": {
+            "label": "Canais permitidos",
+            "help": "IDs dos canais nos quais o bot responde quando a política de grupos é \"allowlist\"."
+          },
+          "group_require_mention": {
+            "label": "Exigir menção nos canais permitidos",
+            "help": "Com a política \"allowlist\", exigir também uma @menção antes de responder nos canais aprovados. Sem efeito para \"mention\" ou \"open\"."
+          }
+        },
+        "discord": {
+          "token": {
+            "label": "Token do bot",
+            "help": "O token do bot obtido no Portal de Desenvolvedores do Discord — não um token de usuário ou OAuth. Armazenado no servidor e nunca devolvido ao navegador."
+          },
+          "allow_from": {
+            "label": "Remetentes permitidos",
+            "help": "Lista de permissão opcional de IDs de usuário do Discord que podem falar com o agente. Deixe vazio para permitir todos."
+          },
+          "allow_channels": {
+            "label": "Canais permitidos",
+            "help": "Lista de permissão opcional de IDs de canais do Discord nos quais o bot responde. Deixe vazio para permitir todos os canais."
+          },
+          "intents": {
+            "label": "Intents do gateway",
+            "help": "Campo de bits de intents do gateway como inteiro (padrão 37377 = GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT). MESSAGE CONTENT é um intent privilegiado que deve ser ativado no Portal de Desenvolvedores, senão o bot não conecta."
+          },
+          "group_policy": {
+            "label": "Política de grupos",
+            "help": "\"mention\" responde apenas quando o bot é mencionado com @ em um canal do servidor, \"open\" responde a todas as mensagens do canal (ainda sujeito às listas de permissão)."
+          },
+          "read_receipt_emoji": {
+            "label": "Emoji de confirmação de leitura",
+            "help": "Emoji adicionado como reação a uma mensagem recebida para confirmá-la de imediato (padrão 👀); removido quando a resposta chega."
+          },
+          "working_emoji": {
+            "label": "Emoji de processamento",
+            "help": "Emoji adicionado como reação enquanto o agente ainda trabalha (padrão 🔧), após o atraso do emoji de processamento."
+          },
+          "working_emoji_delay": {
+            "label": "Atraso do emoji de processamento (s)",
+            "help": "Segundos antes de adicionar o emoji de processamento, para que respostas rápidas nunca o mostrem (padrão 2.0)."
+          },
+          "streaming": {
+            "label": "Respostas em streaming",
+            "help": "Transmitir a resposta editando progressivamente uma única mensagem do Discord em vez de enviar uma mensagem final única."
+          },
+          "proxy": {
+            "label": "URL do proxy",
+            "help": "Proxy HTTP opcional pelo qual passam a conexão ao gateway e as chamadas de API, p. ex. http://host:port."
+          },
+          "proxy_username": {
+            "label": "Usuário do proxy",
+            "help": "Usuário do proxy; informe-o junto com a senha do proxy ou não informe nenhum — um par pela metade é ignorado com um aviso. Armazenado no servidor e nunca devolvido ao navegador."
+          },
+          "proxy_password": {
+            "label": "Senha do proxy",
+            "help": "Senha do proxy; informe-a junto com o usuário do proxy ou não informe nenhum — um par pela metade é ignorado com um aviso. Armazenado no servidor e nunca devolvido ao navegador."
+          }
         }
       },
       "guides": {
@@ -759,6 +1009,26 @@
           "step4": "Salvar com o canal em execução troca o servidor a quente: os clientes conectados (incluindo este chat da interface web) caem por um instante e se reconectam.",
           "step5": "Clique em «Testar conexão»: ele valida localmente o certificado e a chave SSL e a disponibilidade do endereço.",
           "docsLabel": "Abrir a documentação do Vibe-Trading"
+        },
+        "feishu": {
+          "title": "Configuração do bot Feishu / Lark",
+          "intro": "Bots do Feishu usam a conexão contínua por WebSocket, então não é preciso IP público nem webhook.",
+          "step1": "Crie um aplicativo personalizado na plataforma de desenvolvedores do Feishu (open.feishu.cn) — ou crie por leitura de QR no terminal com vibe-trading channels login feishu, que salva o App ID e o App Secret automaticamente.",
+          "step2": "Adicione a capacidade de bot ao aplicativo.",
+          "step3": "Em Assinatura de eventos, assine «Receber mensagens im.message.receive_v1» e escolha o modo de conexão contínua.",
+          "step4": "Copie o App ID e o App Secret em Credenciais e informações básicas e cole-os nos campos acima.",
+          "step5": "Crie uma versão e publique o aplicativo (com aprovação do administrador se o seu tenant exigir); em seguida, ative o canal aqui — a aplicação é imediata, sem reiniciar. Em tenants internacionais do Lark, defina o domínio como lark.",
+          "docsLabel": "Abrir a plataforma de desenvolvedores do Feishu"
+        },
+        "discord": {
+          "title": "Guia de configuração do Discord",
+          "intro": "Bots do Discord conectam-se ao gateway com um token de bot, então não é preciso IP público nem webhook.",
+          "step1": "Crie uma aplicação no Portal de Desenvolvedores do Discord (discord.com/developers).",
+          "step2": "Abra a página Bot, redefina o token e copie-o.",
+          "step3": "Em Privileged Gateway Intents, ative MESSAGE CONTENT INTENT — os intents padrão o exigem.",
+          "step4": "Gere uma URL de convite OAuth2 com o escopo bot (e applications.commands) e adicione o bot ao seu servidor.",
+          "step5": "Cole o token aqui, clique em “Testar conexão” e ative o canal.",
+          "docsLabel": "Abrir a documentação de desenvolvedores do Discord"
         }
       }
     },
@@ -911,6 +1181,7 @@
     "dropFiles": "Solte os arquivos aqui",
     "removeAttachment": "Remover {{filename}}",
     "uploadFailed": "Falha no upload: {{error}}",
+    "messageTooLong": "A mensagem excede {{limit}} caracteres, incluindo informações dos anexos e instruções da equipe. Reduza-a antes de enviar.",
     "failedToSend": "Falha ao enviar mensagem, tente novamente.",
     "failedToContinue": "Falha ao continuar a meta. Tente novamente.",
     "runtimeBadge": "RUNTIME",
@@ -1014,6 +1285,33 @@
     "reproducibility": "Reprodutibilidade",
     "metrics": "Métricas",
     "validationPayload": "Validação",
+    "trust": {
+      "executionRecords": "Registros de execução",
+      "executionDescription": "Etapas de execução registradas e hashes de suas entradas e resultados.",
+      "noExecutionRecords": "Não foram salvos registros de execução para esta execução.",
+      "startedAt": "Início (UTC)",
+      "endedAt": "Fim (UTC)",
+      "argsHash": "SHA-256 dos argumentos",
+      "resultHash": "SHA-256 do resultado",
+      "metricEvidence": "Evidências das métricas",
+      "evidenceDescription": "Referências aos dados de métricas salvos. As somas de verificação identificam os arquivos registrados; esta tela não os verifica de forma independente.",
+      "noMetricEvidence": "Não foram registradas evidências de métricas para esta execução.",
+      "metric": "Métrica",
+      "artifact": "Artefato",
+      "column": "Coluna",
+      "row": "Linha de dados (a partir de 1, sem cabeçalho)",
+      "artifactHash": "SHA-256 do artefato",
+      "tools": {
+        "backtest": "Backtest",
+        "load_data": "Carregar dados",
+        "generate_signals": "Gerar sinais"
+      },
+      "status": {
+        "ok": "Concluído",
+        "error": "Falhou",
+        "cancelled": "Cancelado"
+      }
+    },
     "artifactChecksums": "Somas de verificação de artefato",
     "path": "Caminho",
     "size": "Tamanho",
@@ -1340,7 +1638,7 @@
     "dead": "Morto",
     "skipped": "Ignorado",
     "topByIr": "Top 5 por RI",
-    "mostReversed": "Mais invertido",
+    "mostReversed": "Exemplos com menor IC",
     "byTheme": "Por tema",
     "noRows": "Sem linhas.",
     "meanIc": "IC médio",
@@ -1844,7 +2142,9 @@
       "errorReconnect": "Falha na reconexão da conta",
       "errorReconnectTimeout": "A autorização do navegador expirou. Reconecte-se e conclua a autorização do corretora imediatamente.",
       "errorSaveSettings": "Não foi possível salvar as configurações do portfólio",
-      "errorExport": "Falha na exportação"
+      "errorExport": "Falha na exportação",
+      "exportResearch": "Exportar snapshot de análise",
+      "researchSnapshotHint": "Exporte esta observação sem credenciais ou números de conta. Reutilize seu ID de snapshot em portfolio_summary."
     },
     "metrics": {
       "total": "Ativos totais",
@@ -1993,5 +2293,53 @@
       "accountSave": "Usar esta conta",
       "accountSaved": "Conta salva."
     }
+  },
+  "analysis": {
+    "updated": "Atualizado",
+    "updating": "Calculando…",
+    "editing": "Parâmetros alterados",
+    "invalid": "Insira parâmetros válidos",
+    "failed": "Falha na análise",
+    "previousResult": "Exibindo o resultado dos parâmetros anteriores",
+    "lastComputed": "Calculado às {{time}}",
+    "advancedParameters": "Parâmetros avançados",
+    "chainOnDemand": "Carregue cotações quando precisar; o cálculo usa os prêmios informados.",
+    "allStrikes": "Mostrar todos os preços de exercício",
+    "nearAtm": "Mostrar próximos ao ATM",
+    "chainQuote": "Cotação do ativo {{ticker}}: {{price}}",
+    "lastFetched": "Obtido às {{time}}",
+    "assetsValidation": "Insira 2–20 ativos distintos separados por vírgulas, espaços ou ponto e vírgula.",
+    "windowObservations": "Observações de retorno",
+    "coverage": "{{count}} observações alinhadas · {{start}} a {{end}}",
+    "usedAssets": "Ativos usados: {{assets}}",
+    "missingAssets": "Cotações ausentes: {{assets}}",
+    "regimeMethod": "Os regimes usam correlação de Pearson; o método selecionado se aplica à matriz.",
+    "evaluateFactor": "Avaliar este fator",
+    "evaluateSelected": "Avaliar seleção ({{count}})",
+    "factorSelectionHint": "Avalie um fator ou compare poucos. Avaliar todo o catálogo demora mais.",
+    "resultLimit": "Linhas exibidas (não reduz o cálculo)",
+    "evaluationScope": "Serão avaliados {{count}} fatores em um universo de ações.",
+    "checkingData": "Verificando requisitos de dados…",
+    "ready_public_data": "Usa dados públicos. A disponibilidade real é verificada na execução.",
+    "ready_tushare_ready": "Tushare configurado. CSI 300 também precisa de permissões para preços diários, ajustes e composição histórica.",
+    "ready_tushare_token_missing": "CSI 300 precisa de token Tushare e permissões de dados. Configure-os ou escolha S&P 500.",
+    "ready_tushare_dependency_missing": "Instale Tushare ou escolha S&P 500.",
+    "ready_single_asset": "BTC-USDT é um único ativo; IC transversal exige um universo de ações. Escolha CSI 300 ou S&P 500.",
+    "stage_loading_data": "Carregando universo e histórico de preços…",
+    "stage_preparing_returns": "Preparando retornos futuros…",
+    "stage_computing": "Calculando pontuações de fatores…",
+    "backgroundJob": "Você pode sair da página e voltar à tarefa enquanto o servidor estiver ativo.",
+    "resumeJob": "Reconectar à tarefa",
+    "streamInterrupted": "Conexão interrompida. Reconecte para recuperar progresso e resultados.",
+    "jobExpired": "Tarefa expirada ou servidor reiniciado. Inicie outra avaliação.",
+    "source_unavailable": "Fonte indisponível ou não configurada",
+    "fetch_failed": "Falha na solicitação",
+    "no_data": "Sem cotações para este símbolo e período",
+    "factorCoverage": "Preços obtidos para {{count}} de {{total}} ações solicitadas.",
+    "survivorshipBias": "Usa os componentes atuais do índice; os resultados históricos têm viés de sobrevivência.",
+    "degradedUniverse": "A lista do índice não foi obtida; esta execução usa um universo alternativo menor e informado.",
+    "selectedFactor": "Fator selecionado: {{id}}. Apenas este fator será avaliado.",
+    "fundamentalsRequirement": "Fatores fundamentalistas exigem demonstrações SEC sem dados futuros e um universo de ações dos EUA (S&P 500).",
+    "noEvaluableFactors": "Nenhum fator pôde ser avaliado. Amplie o histórico e verifique os campos necessários e o universo de ações."
   }
 }

@@ -53,6 +53,7 @@ _REDACTED = "[redacted]"
 #: degrades to the strict behaviour (fail closed).
 ARGUMENTS_SINK = "arguments"
 RESULT_SINK = "result"
+_VALUE_UNAVAILABLE = object()
 
 #: Curated EXACT-MATCH PII / account-identifier field names (SPEC Consent §5 /
 #: §8 #2). These are scrubbed in addition to the credential-marker keys below.
@@ -113,6 +114,19 @@ _SENSITIVE_ARG_MARKERS = ("api_key", "authorization", "password", "secret", "tok
 #: (an env dump in a result leaks exactly what an env argument would).
 _RESULT_SAFE_KEYS = {"content"}
 
+#: Exact token-metadata names eligible for a VALUE-SHAPED exemption in every
+#: sink. A familiar name alone is never permission to release its value:
+#: counts must be nonnegative integers (or absent), usage may be a mapping of
+#: counts, and CLOB ids must have the public decimal uint256 shape. Unknown
+#: shapes fail closed, including unprefixed secrets no text regex can detect.
+_BENIGN_TOKEN_FIELD_KEYS = {
+    "token_budget",
+    "token_usage",
+    "total_input_tokens",
+    "total_output_tokens",
+    "clob_token_id",
+}
+
 
 def _fold_key(name: str) -> str:
     """Fold a key to its alphanumeric core (lower-case, separators stripped).
@@ -139,6 +153,11 @@ _SENSITIVE_ARG_MARKERS_FOLDED = tuple(_fold_key(m) for m in _SENSITIVE_ARG_MARKE
 #: Folded form of :data:`_RESULT_SAFE_KEYS`. Exact (folded) match only, so
 #: ``secret_content`` / ``content_token`` keep redacting everywhere.
 _RESULT_SAFE_KEYS_FOLDED = frozenset(_fold_key(k) for k in _RESULT_SAFE_KEYS)
+#: Folded form of :data:`_BENIGN_TOKEN_FIELD_KEYS`. Exact (folded) match
+#: only, so ``access_token`` / ``token_secret`` keep redacting everywhere.
+_BENIGN_TOKEN_FIELD_KEYS_FOLDED = frozenset(
+    _fold_key(k) for k in _BENIGN_TOKEN_FIELD_KEYS
+)
 
 
 @lru_cache(maxsize=8)
@@ -243,7 +262,9 @@ def redact_internal_paths(text: object) -> str:
     return s
 
 
-def is_sensitive_arg(name: str, *, sink: str = ARGUMENTS_SINK) -> bool:
+def is_sensitive_arg(
+    name: str, *, sink: str = ARGUMENTS_SINK, value: Any = _VALUE_UNAVAILABLE
+) -> bool:
     """Return whether a tool-argument / payload key name should be redacted.
 
     A key is sensitive when its normalized (stripped, lower-cased) form either
@@ -257,10 +278,16 @@ def is_sensitive_arg(name: str, *, sink: str = ARGUMENTS_SINK) -> bool:
     Account/PII matching is intentionally exact-only — never a broad
     ``"account"`` substring — so benign fields are not over-redacted and the
     audit record's opaque ``account_ref`` provenance field (the
-    mandate→consent accountability chain, SPEC §5) is preserved.
+    mandate→consent accountability chain, SPEC §5) is preserved. The same
+    reasoning permits :data:`_BENIGN_TOKEN_FIELD_KEYS` only when ``value``
+    has the expected metadata shape. Without a value these names remain
+    sensitive. Usage mappings still require recursive redaction by
+    :func:`redact_payload`; this predicate never approves an entire subtree.
 
     Args:
         name: Argument or payload key name to classify.
+        value: Candidate value for the token-metadata exception. Omission
+            fails closed for token-like names.
         sink: Where the value is headed. :data:`ARGUMENTS_SINK` (the default)
             is the strict set used for tool-call arguments and the live audit
             ledger; :data:`RESULT_SINK` additionally releases the
@@ -274,6 +301,18 @@ def is_sensitive_arg(name: str, *, sink: str = ARGUMENTS_SINK) -> bool:
     """
     normalized = name.strip().lower()
     folded = _fold_key(name)
+    if folded in _BENIGN_TOKEN_FIELD_KEYS_FOLDED:
+        if folded == "clobtokenid":
+            return not (
+                isinstance(value, str)
+                and value.isascii()
+                and value.isdecimal()
+                and len(value) <= 78
+                and int(value) < 2**256
+            )
+        if folded == "tokenusage" and isinstance(value, dict):
+            return False
+        return not (value is None or (type(value) is int and value >= 0))
     if sink == RESULT_SINK and folded in _RESULT_SAFE_KEYS_FOLDED:
         return False
     if normalized in _SENSITIVE_ARG_KEYS or any(
@@ -292,9 +331,11 @@ def redact_payload(obj: Any, *, sink: str = ARGUMENTS_SINK) -> Any:
     """Recursively redact sensitive keys in a structured payload.
 
     Walks dicts and lists; any dict value whose key :func:`is_sensitive_arg`
-    is replaced with the ``'[redacted]'`` sentinel. Non-container values pass
-    through unchanged. Used before event-preview stringification and before
-    writing broker request/response payloads to the live audit ledger.
+    marks sensitive is replaced with the ``'[redacted]'`` sentinel. Token
+    metadata exceptions additionally validate value shape, and usage mappings
+    retain only numeric leaves after sensitive-key scrubbing. String leaves
+    are pattern-scrubbed in every sink. Used before event-preview stringification
+    and before writing broker payloads to the live audit ledger.
 
     Scrubs two key classes (see :func:`is_sensitive_arg`): credential keys
     (OAuth tokens, ``api_key``, ``authorization``, ``password``/``secret``,
@@ -306,11 +347,10 @@ def redact_payload(obj: Any, *, sink: str = ARGUMENTS_SINK) -> Any:
     Args:
         obj: Arbitrary payload (dict / list / scalar) to scrub.
         sink: Where the payload is headed; forwarded to
-            :func:`is_sensitive_arg`. In :data:`RESULT_SINK` the surviving
-            string leaves are additionally pattern-scrubbed with
-            :func:`redact_text`, because a JSON tool result routinely carries
-            free text (shell ``stdout``, error bodies) under a benign key that
-            no key-based rule can classify.
+            :func:`is_sensitive_arg`. In every sink surviving string leaves
+            are additionally pattern-scrubbed with :func:`redact_text`, since
+            shell commands, output and error bodies can carry credentials
+            under a benign key that no key-based rule can classify.
 
     Returns:
         A new structure of the same shape with sensitive values replaced. The
@@ -319,7 +359,9 @@ def redact_payload(obj: Any, *, sink: str = ARGUMENTS_SINK) -> Any:
     if isinstance(obj, dict):
         return {
             key: _REDACTED
-            if is_sensitive_arg(str(key), sink=sink)
+            if is_sensitive_arg(str(key), sink=sink, value=item)
+            else _redact_token_usage(item, sink=sink)
+            if _fold_key(str(key)) == "tokenusage"
             else redact_payload(item, sink=sink)
             for key, item in obj.items()
         }
@@ -333,19 +375,44 @@ def redact_payload(obj: Any, *, sink: str = ARGUMENTS_SINK) -> Any:
     return obj
 
 
+def _redact_token_usage(value: Any, *, sink: str) -> Any:
+    """Keep usage counts without admitting credentials through a usage map.
+
+    Args:
+        value: Usage count or nested mapping to scrub.
+        sink: Sink policy for nested sensitive keys.
+
+    Returns:
+        A fresh mapping containing only counts, nulls, and redaction sentinels.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED
+            if is_sensitive_arg(str(key), sink=sink, value=item)
+            else _redact_token_usage(item, sink=sink)
+            for key, item in value.items()
+        }
+    return value if value is None or (type(value) is int and value >= 0) else _REDACTED
+
+
 #: Credential-shaped key names recognized in FREE TEXT. Longer alternatives
 #: come first so ``access_token`` is not clipped to ``token`` and
 #: ``secret_key`` is not clipped to ``secret``. The list is deliberately
 #: scoped to credential field names so a benign number in shell output (a
 #: price, a duration, a timestamp) is never mangled.
 #:
-#: All names are SINGULAR and ``\b``-anchored: a plural is a count or a
-#: collection, never a credential, and matching it mangles routine output
-#: (``tokens: 1204 in / 318 out`` from the LLM usage line, ``api_keys: 3``).
+#: All names are SINGULAR and must start a word: either a ``\b`` boundary, an
+#: UPPERCASE env-style prefix such as ``TUSHARE_``, or the ``aws_`` prefix (see
+#: :data:`_TEXT_KV_PATTERN`).
+#: A plural is a count or a collection, never a credential, and matching it
+#: mangles routine output (``tokens: 1204 in / 318 out`` from the LLM usage
+#: line, ``api_keys: 3``). A lowercase suffix like ``pad_token`` or
+#: ``max_token`` is an ordinary identifier, so it is left alone.
 _TEXT_CREDENTIAL_KEYS = (
     r"api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token"
     r"|refresh[_-]?token|bearer[_-]?token|id[_-]?token|session[_-]?token"
-    r"|client[_-]?secret|secret[_-]?key|private[_-]?key|app[_-]?secret"
+    r"|client[_-]?secret|secret[_-]?access[_-]?key|secret[_-]?key"
+    r"|private[_-]?key|app[_-]?secret"
     r"|passphrase|password|passwd|authorization|secret|token"
 )
 
@@ -365,7 +432,14 @@ _TEXT_VALUE = r"\"[^\"\n]*\"|'[^'\n]*'|[^\s,;{}\[\]()\"']+"
 #: Every quantifier applies to a bounded character class, with no nesting and
 #: no overlapping alternatives, so matching stays linear (no ReDoS surface).
 _TEXT_KV_PATTERN = re.compile(
-    r"(?P<q>[\"']?)\b(?P<name>" + _TEXT_CREDENTIAL_KEYS + r")\b(?P=q)"
+    r"(?P<q>[\"']?)"
+    # ``\b`` for a plain name; for an env-style name the label follows an
+    # UPPERCASE segment and ``_`` (``TUSHARE_TOKEN``). The inline ``(?-i:...)``
+    # keeps the uppercase test case-sensitive under IGNORECASE, so ``pad_token``
+    # and ``max_token`` still do not match. ``aws_`` is the one lowercase prefix
+    # accepted, for ``~/.aws/credentials`` names such as ``aws_secret_access_key``.
+    r"(?:\b|(?<=(?-i:[A-Z0-9])_)|(?<=aws_))"
+    r"(?P<name>" + _TEXT_CREDENTIAL_KEYS + r")\b(?P=q)"
     r"(?P<sep>\s*[:=]\s*)"
     r"(?![\"']?" + re.escape(_REDACTED) + r"[\"']?|bearer\b)"
     r"(?P<value>" + _TEXT_VALUE + r")",
@@ -378,6 +452,19 @@ _TEXT_KV_PATTERN = re.compile(
 _TEXT_BEARER_PATTERN = re.compile(
     r"\b(?P<scheme>bearer)\s+(?P<value>[A-Za-z0-9._~+/-]+=*)",
     re.IGNORECASE,
+)
+
+#: URL userinfo (``scheme://user:password@host``). It is a credential with no
+#: key label, so the key-based pattern never reaches it. A password may contain
+#: ``@``, so the match runs to the last ``@`` before a delimiter (whitespace,
+#: path/query/fragment markers, quotes, brackets, commas), and JSON fields after
+#: a URL are left alone. A bare username is redacted only when it is 20+ token
+#: characters (a pasted access token), so ``git@host`` stays readable.
+_TEXT_URL_USERINFO_PATTERN = re.compile(
+    r"(?<=://)"
+    r"(?:[^\s/?#\"'<>(){}\[\],:@]*:[^\s/?#\"'<>(){}\[\],]*"  # user:password
+    r"|[A-Za-z0-9_-]{20,})"                                  # bare token
+    r"@"
 )
 
 
@@ -425,9 +512,10 @@ def redact_text(text: object) -> str:
     Used for plain-text tool results, shell output, error messages and log
     lines where :func:`redact_payload` is a no-op (it only walks structured
     keys). Bearer header values and ``key=value`` / ``key: value`` /
-    ``"key": "value"`` credential pairs are replaced with ``'[redacted]'``
-    while the surrounding text — labels, paths, error context — stays
-    readable.
+    ``"key": "value"`` credential pairs are replaced with ``'[redacted]'``,
+    and URL userinfo (``scheme://user:password@host``) becomes
+    ``scheme://[redacted]@host``, while the surrounding text — labels, paths,
+    error context — stays readable.
 
     Args:
         text: Free-form string (or any object coerced via :func:`str`).
@@ -444,6 +532,7 @@ def redact_text(text: object) -> str:
     if not s:
         return s
     s = _TEXT_BEARER_PATTERN.sub(r"\g<scheme> " + _REDACTED, s)
+    s = _TEXT_URL_USERINFO_PATTERN.sub(_REDACTED + "@", s)
     s = _TEXT_KV_PATTERN.sub(_sub_credential_pair, s)
     # Bare tokens with no key label in front of them.
     return _TEXT_TOKEN_PATTERN.sub(_REDACTED, s)

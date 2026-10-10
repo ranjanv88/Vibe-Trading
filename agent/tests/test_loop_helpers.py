@@ -20,7 +20,6 @@ from src.agent.loop import (
     _archive_backtest_result,
     _llm_timeout_seconds,
     _stall_timeout_seconds,
-    _verification_ledger,
     _cleared_text,
 )
 
@@ -561,12 +560,12 @@ class TestArchiveBacktestResult:
 
 def test_llm_timeout_seconds_default_and_override(monkeypatch) -> None:
     """The LLM call timeout reads config and honors a module-level override."""
-    import src.agent.loop as loop_module
+    import src.agent.tuning as tuning_module
 
     assert _llm_timeout_seconds() > 0
-    monkeypatch.setattr(loop_module, "LLM_TIMEOUT_SECONDS", 42.0, raising=False)
+    monkeypatch.setattr(tuning_module, "LLM_TIMEOUT_SECONDS", 42.0, raising=False)
     assert _llm_timeout_seconds() == 42.0
-    monkeypatch.delattr(loop_module, "LLM_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delattr(tuning_module, "LLM_TIMEOUT_SECONDS", raising=False)
     assert _llm_timeout_seconds() > 0
 
 def test_pending_write_directive_tracks_written_targets(tmp_path: Path) -> None:
@@ -673,12 +672,12 @@ def test_verification_ledger_deduplicates_and_caps() -> None:
 
 def test_stall_timeout_seconds_default_and_override(monkeypatch) -> None:
     """The stall watchdog timeout reads config and honors a module override."""
-    import src.agent.loop as loop_module
+    import src.agent.tuning as tuning_module
 
     assert _stall_timeout_seconds() > 0
-    monkeypatch.setattr(loop_module, "STALL_TIMEOUT_SECONDS", 42.0, raising=False)
+    monkeypatch.setattr(tuning_module, "STALL_TIMEOUT_SECONDS", 42.0, raising=False)
     assert _stall_timeout_seconds() == 42.0
-    monkeypatch.delattr(loop_module, "STALL_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delattr(tuning_module, "STALL_TIMEOUT_SECONDS", raising=False)
     assert _stall_timeout_seconds() > 0
 
 
@@ -705,6 +704,23 @@ def test_tail_cut_index_counts_tool_call_arguments() -> None:
     # Old content-only sizing: both messages fit the 20K budget -> cut at 0.
     # New sizing: the call alone exceeds it -> cut at len(body), tail empty,
     # the oversized call goes into the folded head.
+    assert _tail_cut_index(body) == len(body)
+    assert _tail_cut_index(body) != 0
+
+
+def test_tail_cut_index_counts_reasoning_content() -> None:
+    """#tail-budget: a thinking-model turn's huge reasoning_content must be
+    pushed into the folded head too, not counted as ~10 tokens in the tail."""
+    from src.agent.loop import _tail_cut_index
+
+    fat = "X" * 90_000  # ~22.5K tokens once reasoning_content is counted
+    body = [
+        {"role": "user", "content": "old header"},
+        {"role": "assistant", "content": "final answer", "reasoning_content": fat},
+    ]
+    # Old sizing (content only): both messages fit the 20K budget -> cut at 0.
+    # New sizing: the reasoning turn alone exceeds it -> cut at len(body), tail
+    # empty, the oversized turn goes into the folded head.
     assert _tail_cut_index(body) == len(body)
     assert _tail_cut_index(body) != 0
 
@@ -809,6 +825,20 @@ def test_msg_estimate_chars_counts_dict_arguments() -> None:
     }
     assert _msg_estimate_chars(msg) >= 4000
     assert _msg_estimate_chars({"role": "user", "content": "hi"}) >= 2
+
+
+def test_msg_estimate_chars_counts_reasoning_content() -> None:
+    """#adversarial: reasoning_content must count toward sizing too, consistent
+    with ``estimate_tokens``' full serialization gate."""
+    from src.agent.loop import _msg_estimate_chars
+
+    msg = {
+        "role": "assistant",
+        "content": "final answer",
+        "reasoning_content": "X" * 4000,
+    }
+    assert _msg_estimate_chars(msg) >= 4000
+    assert _msg_estimate_chars({"role": "user", "content": "hi"}) < 4000
 
 
 class TestMicrocompactMarkerIsStable:

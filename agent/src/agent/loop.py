@@ -15,25 +15,69 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
-import copy
 import json
 import logging
 import queue
-import re
-import shutil
-import sys
 import threading
 import time as _time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from src.agent.tuning import (
+    TOKEN_THRESHOLD as TOKEN_THRESHOLD,
+    _override as _override,
+    _token_threshold as _token_threshold,
+    _heartbeat_interval_s as _heartbeat_interval_s,
+    _reasoning_delta_min_interval_s as _reasoning_delta_min_interval_s,
+    _stream_retry_delay_s as _stream_retry_delay_s,
+    _stream_retry_max_delay_s as _stream_retry_max_delay_s,
+    _stream_retry_backoff_s as _stream_retry_backoff_s,
+    _tool_timeout_seconds as _tool_timeout_seconds,
+    _llm_timeout_seconds as _llm_timeout_seconds,
+    _goal_max_continuations as _goal_max_continuations,
+    _stall_timeout_seconds as _stall_timeout_seconds,
+)
 
 from src.agent.context import ContextBuilder
 from src.agent.grounding import GroundingLedger
 from src.agent.grounding.release import MAX_GROUNDING_REVISIONS
 from src.agent.memory import WorkspaceMemory
 from src.agent.progress import HeartbeatTimer, ProgressEvent, _set_emitter
-from src.agent.tool_progress import RECOVERY_MESSAGE, ToolProgress
+from src.agent.context_budget import (
+    MIN_CONVERSATION_TOKENS,
+    CompactionBudget,
+    ContextMeter,
+    is_context_overflow,
+    parse_context_limit,
+    resolve_window,
+)
+from src.agent.context_compact import (  # noqa: F401  (re-exported so loop imports keep working)
+    COLLAPSE_HEAD,
+    COLLAPSE_PRESERVE_RECENT,
+    COLLAPSE_TAIL,
+    COLLAPSE_TEXT_MIN,
+    KEEP_RECENT,
+    SUMMARY_CHUNK_CHARS,
+    TAIL_TOKEN_BUDGET,
+    _CLEARED_PREFIX,
+    _ITERATIVE_UPDATE_PROMPT,
+    _STRUCTURED_SUMMARY_PROMPT,
+    _FOCUS_SECTION,
+    _STUB_RESULT_CONTENT,
+    _attach_tool_call_thought_signatures,
+    _cleared_text,
+    _context_collapse,
+    _fix_tool_pairs,
+    _is_cleared,
+    _microcompact,
+    _msg_estimate_chars,
+    _replay_context_result,
+    _result_data_gone,
+    _summary_chunks,
+    _tail_cut_index,
+    _verification_ledger,
+)
+from src.agent.tool_progress import ToolProgress
 from src.agent.tools import ToolRegistry
 from src.agent.trace import TraceWriter
 from src.core.state import RunStateStore
@@ -48,33 +92,15 @@ from src.providers.session_context import bind_llm_session_id, reset_llm_session
 from src.providers.content_filter import (
     CONTENT_FILTER_SKIP_MESSAGE,
     MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS,
-    compute_content_filter_warnings,
 )
 from src.config.accessor import get_env_config
 from src.config.paths import get_runs_dir, get_sessions_dir
 from src.tools.background_tools import get_background_manager
 from src.config.limits import truncate_tool_result
-from src.tools.path_utils import safe_run_dir
 from src.tools.redaction import redact_payload, redact_tool_result
 
 RUNS_DIR = get_runs_dir()
 SESSIONS_DIR = get_sessions_dir()
-KEEP_RECENT = 3
-LLM_USAGE_ARTIFACT = "llm_usage.json"
-
-COLLAPSE_PRESERVE_RECENT = 6
-COLLAPSE_TEXT_MIN = 2400
-COLLAPSE_HEAD = 900
-COLLAPSE_TAIL = 500
-
-# The stub ``_fix_tool_pairs`` inserts for a call whose result a layer-3 fold
-# consumed. The other "data is gone" placeholder is layer 1's cleared marker,
-# which is not a constant — it embeds the original payload length, so it is
-# built by ``_cleared_text`` and matched by ``_is_cleared``.
-_STUB_RESULT_CONTENT = "[Result from earlier context — see summary above]"
-
-TAIL_TOKEN_BUDGET = 20_000
-SUMMARY_CHUNK_CHARS = 80_000
 
 # An LLM may return a transient empty completion (no text, no tool calls);
 # retry once with a nudge before failing the run on a second consecutive one.
@@ -88,222 +114,7 @@ MAX_CONSECUTIVE_EMPTY_RESPONSE_SKIPS = 1
 MAX_READONLY_REPLAY_RECOVERIES = 6
 
 
-def _override(name: str):
-    """Return a monkeypatched module-level override if present."""
-    mod = sys.modules.get(__name__)
-    if mod is not None and name in mod.__dict__:
-        return mod.__dict__[name]
-    return None
-
-
-def _token_threshold() -> int:
-    ov = _override("TOKEN_THRESHOLD")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.token_threshold
-
-
-def _heartbeat_interval_s() -> float:
-    ov = _override("HEARTBEAT_INTERVAL_S")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vt_heartbeat_interval_s
-
-
-def _reasoning_delta_min_interval_s() -> float:
-    ov = _override("REASONING_DELTA_MIN_INTERVAL_S")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vt_reasoning_delta_min_interval_s
-
-
-def _stream_retry_delay_s() -> float:
-    ov = _override("STREAM_RETRY_DELAY_S")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vt_stream_retry_delay_s
-
-
-def _stream_retry_max_delay_s() -> float:
-    ov = _override("STREAM_RETRY_MAX_DELAY_S")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vt_stream_retry_max_delay_s
-
-
-def _stream_retry_backoff_s(streak: int) -> float:
-    """Return the capped exponential delay for the one-based failure streak.
-
-    Doubles per consecutive retryable stream failure (1.0s, 2.0s, 4.0s, ...)
-    so a sustained provider outage backs off instead of burning the retry
-    budget at a constant cadence. The exponent is clamped at 62 (mirroring
-    ``src/swarm/runtime.py``'s worker-level backoff) and the result is capped
-    at ``_stream_retry_max_delay_s()``.
-
-    Args:
-        streak: Number of consecutive retryable stream failures including the
-            current one; values below 1 are treated as 1.
-
-    Returns:
-        Seconds to sleep before the stream retry, never negative.
-    """
-    ceiling = min(
-        _stream_retry_delay_s() * (2 ** min(max(streak, 1) - 1, 62)),
-        _stream_retry_max_delay_s(),
-    )
-    return max(ceiling, 0.0)
-
-
-def _tool_timeout_seconds() -> float:
-    ov = _override("TOOL_TIMEOUT_SECONDS")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vibe_trading_tool_timeout_seconds
-
-
-def _llm_timeout_seconds() -> float:
-    """Return the per-call LLM timeout in seconds (0/negative disables).
-
-    A silent provider stall otherwise hangs the ReAct loop or the
-    auto-compact summary call indefinitely - no chunk arrives, so the
-    per-chunk cancel check never runs. Bounding the call lets the run fail
-    (or degrade compaction) instead of freezing mid-task.
-    """
-    ov = _override("LLM_TIMEOUT_SECONDS")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vibe_trading_llm_timeout_seconds
-
-
-def _goal_max_continuations() -> int:
-    ov = _override("GOAL_MAX_CONTINUATIONS")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vibe_trading_goal_max_continuations
-
-
-def _stall_timeout_seconds() -> float:
-    """Return the run-stall watchdog timeout in seconds (0/negative disables).
-
-    A run that makes no forward progress (no LLM completion, no tool result)
-    for this long is treated as a zombie and failed explicitly with a clear
-    reason instead of staying "running" forever with no state.json
-    (recurring 2026-08 zombie runs). Heartbeats do NOT count as progress: a
-    hung tool keeps emitting heartbeats, which is exactly the case the
-    watchdog must catch.
-    """
-    ov = _override("STALL_TIMEOUT_SECONDS")
-    if ov is not None:
-        return ov
-    from src.config.accessor import get_env_config
-    return get_env_config().agent_tuning.vibe_trading_run_stall_timeout_seconds
-
 logger = logging.getLogger(__name__)
-
-
-def _coerce_usage_int(value: Any) -> int:
-    """Coerce provider token counts to non-negative ints."""
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _normalize_llm_usage(usage: Any) -> dict[str, int] | None:
-    """Normalize provider-reported usage metadata without estimating tokens."""
-    if usage is None:
-        return None
-    if not isinstance(usage, dict):
-        try:
-            usage = dict(usage)
-        except (TypeError, ValueError):
-            return None
-
-    input_tokens = _coerce_usage_int(usage.get("input_tokens"))
-    output_tokens = _coerce_usage_int(usage.get("output_tokens"))
-    total_tokens = _coerce_usage_int(usage.get("total_tokens"))
-    if total_tokens == 0 and (input_tokens or output_tokens):
-        total_tokens = input_tokens + output_tokens
-    if not (input_tokens or output_tokens or total_tokens):
-        return None
-    normalized: dict[str, int] = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-    }
-    details = usage.get("input_token_details")
-    if isinstance(details, dict):
-        if details.get("cache_read") is not None:
-            normalized["cache_read_tokens"] = _coerce_usage_int(details["cache_read"])
-        creation_keys = ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
-        if any(details.get(key) is not None for key in creation_keys):
-            normalized["cache_creation_tokens"] = sum(
-                _coerce_usage_int(details.get(key)) for key in creation_keys
-            )
-    return normalized
-
-
-def _new_llm_usage_summary(llm: Any) -> dict[str, Any]:
-    """Create the run-scoped provider usage accumulator."""
-    from src.config.accessor import get_env_config
-    cfg = get_env_config()
-    provider = cfg.llm.langchain_provider.strip() or "openai"
-    model = getattr(llm, "model_name", None) or cfg.llm.langchain_model_name.strip()
-    return {
-        "provider": provider,
-        "model": model,
-        "totals": {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "calls": 0,
-        },
-        "per_iteration": [],
-    }
-
-
-def _record_llm_usage(
-    run_dir: Path,
-    summary: dict[str, Any],
-    usage: Any,
-    iteration: int,
-) -> dict[str, int] | None:
-    """Accumulate and persist one provider-reported usage event."""
-    normalized = _normalize_llm_usage(usage)
-    if normalized is None:
-        return None
-
-    totals = summary.setdefault("totals", {})
-    totals["input_tokens"] = int(totals.get("input_tokens") or 0) + normalized["input_tokens"]
-    totals["output_tokens"] = int(totals.get("output_tokens") or 0) + normalized["output_tokens"]
-    totals["total_tokens"] = int(totals.get("total_tokens") or 0) + normalized["total_tokens"]
-    totals["calls"] = int(totals.get("calls") or 0) + 1
-    for key in ("cache_read_tokens", "cache_creation_tokens"):
-        if key in normalized:
-            totals[key] = int(totals.get(key) or 0) + normalized[key]
-    summary.setdefault("per_iteration", []).append({"iter": iteration, **normalized})
-    summary["updated_at"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-    try:
-        path = run_dir / LLM_USAGE_ARTIFACT
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        tmp_path.replace(path)
-    except OSError as exc:
-        logger.debug("LLM usage artifact write skipped: %s", exc)
-
-    return normalized
 
 
 def _format_timeout(seconds: float) -> str:
@@ -325,747 +136,39 @@ def estimate_tokens(messages: list) -> int:
     return len(json.dumps(messages, default=str, ensure_ascii=False)) // 4
 
 
-def _summary_chunks(msgs: list, limit: int = SUMMARY_CHUNK_CHARS) -> list[str]:
-    """Serialize messages into bounded chunks for lossless summary folding.
-
-    Messages are packed by whole-message boundaries so that ordinary chunks
-    remain valid JSON arrays and a summary call never receives a message that
-    was silently cut off. A single oversized message is split into explicitly
-    labeled raw-JSON fragments instead: the label tells the summarizer that a
-    fragment is not valid JSON by itself, while retaining every character
-    instead of dropping or silently truncating part of the conversation.
-
-    Args:
-        msgs: Messages to serialize and divide into chunks.
-        limit: Maximum number of characters allowed in each returned chunk.
-
-    Returns:
-        JSON-array strings, or labeled raw-JSON fragments for an oversized
-        message, each no longer than ``limit`` characters.
-
-    Raises:
-        ValueError: If ``limit`` cannot accommodate an empty JSON array or an
-            oversized-message fragment label.
-    """
-    if limit < 2:
-        raise ValueError("summary chunk limit must be at least 2 characters")
-
-    serialized = [json.dumps(msg, default=str, ensure_ascii=False) for msg in msgs]
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 2  # The opening and closing brackets.
-
-    def flush_current() -> None:
-        nonlocal current, current_len
-        if current:
-            chunks.append("[" + ", ".join(current) + "]")
-            current = []
-            current_len = 2
-
-    for part in serialized:
-        # The two brackets are part of the chunk, so a message that only fits
-        # below ``limit`` as a raw JSON string may still need fragmentation.
-        if len(part) + 2 <= limit:
-            projected_len = current_len + len(part) + (2 if current else 0)
-            if current and projected_len > limit:
-                flush_current()
-            current.append(part)
-            current_len += len(part) + (2 if len(current) > 1 else 0)
-            continue
-
-        flush_current()
-
-        def fragment_prefix(index: int, total: int) -> str:
-            return (
-                f"[fragment {index}/{total} of one oversized message — "
-                "raw JSON slice, not valid JSON on its own]\n"
-            )
-
-        total = 1
-        while True:
-            capacity = limit - len(fragment_prefix(total, total))
-            if capacity <= 0:
-                raise ValueError(
-                    "summary chunk limit is too small for an oversized-message label"
-                )
-            needed = max(1, (len(part) + capacity - 1) // capacity)
-            if needed <= total:
-                break
-            total = needed
-
-        for index in range(1, total + 1):
-            prefix = fragment_prefix(index, total)
-            start = (index - 1) * capacity
-            chunks.append(prefix + part[start : start + capacity])
-
-    flush_current()
-    return chunks or ["[]"]
-
-
-def _verification_ledger(messages: list) -> str:
-    """Extract terse deterministic-verification records from a message list.
-
-    Walks the conversation for successful financial_rigor tool results
-    (the deterministic calculator/verifier) and renders each as a short
-    "already verified" line. Re-attached to the compressed context after
-    auto-compact so the model does not re-run identical expressions it can
-    no longer see (2026-08-20 INTC run re-ran the same calcs 5-9x each
-    after compaction cleared the outputs).
-
-    Args:
-        messages: Message list to scan (tool results only).
-
-    Returns:
-        Newline-joined ledger lines, or an empty string when nothing found.
-    """
-    lines: list[str] = []
-    for msg in messages:
-        if msg.get("role") != "tool":
-            continue
-        content = msg.get("content", "")
-        if not isinstance(content, str):
-            continue
-        try:
-            payload = json.loads(content)
-        except Exception:  # noqa: BLE001 - non-JSON results are skipped
-            continue
-        if not isinstance(payload, dict) or payload.get("status") != "ok":
-            continue
-        command = payload.get("command")
-        if command == "calc" and payload.get("result_exact") is not None:
-            expr = payload.get("expr", "?")
-            result_exact = payload.get("result_exact")
-            lines.append(f"calc {expr} = {result_exact}")
-        elif command == "verify_market_cap" and payload.get("verdict") is not None:
-            verdict = payload.get("verdict")
-            deviation_pct = payload.get("deviation_pct")
-            lines.append(f"market_cap verdict={verdict} dev={deviation_pct}%")
-        elif command == "verify_valuation" and payload.get("metrics"):
-            metrics = payload["metrics"]
-            if isinstance(metrics, dict) and metrics:
-                summary = ", ".join(f"{k}={v}" for k, v in list(metrics.items())[:8])
-                lines.append(f"valuation {summary}")
-        elif command == "cross_validate" and payload.get("all_consistent") is not None:
-            field_name = payload.get("field", "?")
-            all_consistent = payload.get("all_consistent")
-            lines.append(f"cross_validate field={field_name} consistent={all_consistent}")
-        elif command == "benford" and payload.get("reliable") is not None:
-            reliable = payload.get("reliable")
-            conformity = payload.get("conformity", "?")
-            lines.append(f"benford reliable={reliable} conformity={conformity}")
-    # Deduplicate while preserving order; cap the ledger size.
-    seen: set[str] = set()
-    unique: list[str] = []
-    for line in lines:
-        if line not in seen:
-            seen.add(line)
-            unique.append(line)
-        if len(unique) >= 60:
-            break
-    return "\n".join(unique)
-
-# Marker written over a tool result whose payload layer 1 removed. Matched by
-# PREFIX because the text carries the original length, so no two cleared
-# results are the same string; never compare a content to it with ``==``.
-_CLEARED_PREFIX = "[CLEARED FROM CONTEXT:"
-
-
-def _cleared_text(original_len: int) -> str:
-    """Build the self-describing placeholder that replaces a pruned result."""
-    return (
-        f"{_CLEARED_PREFIX} this tool call SUCCEEDED and returned "
-        f"{original_len} characters, which were removed to free context "
-        "space. This is NOT a tool failure and NOT an empty result. If you "
-        "need these values, request the same tool call again; the loop may "
-        "restore the prior successful result without refetching it.]"
-    )
-
-
-def _is_cleared(content: Any) -> bool:
-    """True when ``content`` is a layer-1 cleared-result marker."""
-    return isinstance(content, str) and content.startswith(_CLEARED_PREFIX)
-
-
-def _replay_context_result(result: str) -> str:
-    """Annotate a restored readonly result with planner guidance.
-
-    Replay exists to recover evidence that context compaction removed, not to
-    trigger another fetch under slightly different freshness arguments. Keep
-    the original payload intact and add a reserved metadata field when the
-    result is a JSON object; non-JSON results get a short textual suffix.
-    """
-    notice = (
-        "Exact prior successful result restored after context compaction. "
-        "Treat this payload as available evidence and continue the analysis. "
-        "Do not change cache/freshness arguments merely to bypass replay; "
-        "request a fresh fetch only when the evidence itself is stale/cached "
-        "or the task genuinely requires newer data."
-    )
-    try:
-        payload = json.loads(result)
-    except (TypeError, ValueError):
-        return f"{result}\n\n[Replay notice: {notice}]"
-    if not isinstance(payload, dict):
-        return f"{result}\n\n[Replay notice: {notice}]"
-    replay_payload = dict(payload)
-    replay_payload["_vibe_replay"] = {
-        "restored": True,
-        "notice": notice,
-    }
-    return json.dumps(replay_payload, ensure_ascii=False)
-
-
-def _microcompact(messages: list) -> list:
-    """Layer 1: silently prune old tool results, keeping the most recent N intact.
-
-    Args:
-        messages: Message list (mutated in place).
-
-    Returns:
-        Names of tools whose every result just became unreadable (legacy
-        helper contract). The loop reconciles its dedup ledger separately by
-        exact successful call identity, not by these tool names.
-    """
-    tool_msgs = [m for m in messages if m.get("role") == "tool"]
-    if len(tool_msgs) <= KEEP_RECENT:
-        return []
-    newly_cleared = []
-    for msg in tool_msgs[:-KEEP_RECENT]:
-        content = msg.get("content", "")
-        # Skip a result already cleared: the marker is itself >100 chars, so
-        # re-clearing it would rewrite the recorded original size with the
-        # MARKER's length ("returned 287 characters") and re-report the tool
-        # as newly unreadable on every later pass.
-        if isinstance(content, str) and len(content) > 100 and not _is_cleared(content):
-            # A bare "[cleared]" is indistinguishable from a tool that
-            # returned nothing, so the model reports "no data was retrieved"
-            # for data it did receive and this layer then deleted. Say which
-            # it is, and say the result is recoverable.
-            msg["content"] = _cleared_text(len(content))
-            if msg.get("name"):
-                newly_cleared.append(msg["name"])
-    # Identified by prefix, not equality: the marker carries the original
-    # length, so every cleared result is a different string.
-    surviving = {m.get("name") for m in tool_msgs if not _is_cleared(m.get("content"))}
-    return sorted(set(newly_cleared) - surviving)
-
-
-def _result_data_gone(content: Any) -> bool:
-    """True when a tool result's real data is gone from context.
-
-    Two sources, and they must both be recognised: layer 1 overwrites an old
-    result with the ``_CLEARED_PREFIX`` marker, and ``_fix_tool_pairs``
-    inserts ``_STUB_RESULT_CONTENT`` for a call whose result a layer-3 fold
-    consumed. The marker is matched by prefix, never equality — it embeds the
-    original payload length, so no two cleared results are the same string.
-    """
-    return _is_cleared(content) or content == _STUB_RESULT_CONTENT
-
-
-def _context_collapse(messages: list) -> None:
-    """Layer 2: fold long text blocks in older messages without LLM call.
-
-    Preserves head + tail of large text, collapses the middle.
-    Zero API cost — pure string operation.
-
-    Args:
-        messages: Message list (mutated in place).
-    """
-    if len(messages) <= COLLAPSE_PRESERVE_RECENT + 1:
-        return
-    for msg in messages[1:-COLLAPSE_PRESERVE_RECENT]:
-        content = msg.get("content")
-        if not isinstance(content, str) or len(content) <= COLLAPSE_TEXT_MIN:
-            continue
-        if _result_data_gone(content):
-            continue
-        head = content[:COLLAPSE_HEAD]
-        tail = content[-COLLAPSE_TAIL:]
-        trimmed = len(content) - COLLAPSE_HEAD - COLLAPSE_TAIL
-        msg["content"] = f"{head}\n\n...[{trimmed} chars collapsed]...\n\n{tail}"
-
-    # Zero-cost relief for oversized tool-call payloads whose paired result
-    # was already compacted away (``[cleared]``): the arguments blob is now
-    # useless to the model (the data it requested is gone), so fold it to a
-    # valid JSON stub. The call id/name survive, so tool pairing and the
-    # model's "I called tool X" memory are intact, and the provider still
-    # receives well-formed ``arguments``. Nothing re-reads historical
-    # arguments for re-dispatch, so this is safe.
-    cleared_ids = {
-        m.get("tool_call_id")
-        for m in messages
-        if m.get("role") == "tool" and _result_data_gone(m.get("content"))
-    }
-    for msg in messages[1:-COLLAPSE_PRESERVE_RECENT]:
-        for tc in msg.get("tool_calls") or []:
-            fn = tc.get("function")
-            if not isinstance(fn, dict):
-                continue
-            args = fn.get("arguments")
-            if (
-                isinstance(args, str)
-                and len(args) > COLLAPSE_TEXT_MIN
-                and tc.get("id") in cleared_ids
-            ):
-                fn["arguments"] = "{}"
-
-
-def _msg_estimate_chars(msg: dict) -> int:
-    """Rough character size of a message for token budgeting.
-
-    Sizes ``content`` plus every tool-call ``arguments`` payload. Assistant
-    tool-call messages carry their payload in ``tool_calls[].function.
-    arguments`` with empty ``content``; sizing them by content alone made the
-    layer-3 tail budget count a 100 KB arguments blob as ~10 tokens.
-    """
-    size = len(str(msg.get("content", "")))
-    for tc in msg.get("tool_calls") or []:
-        fn = tc.get("function")
-        if isinstance(fn, dict) and fn.get("arguments") is not None:
-            # Sized via ``str`` (matches ``estimate_tokens``' full-serialization
-            # gate) so dict/object arguments count instead of being ignored.
-            size += len(str(fn["arguments"]))
-    return size
-
-
-def _tail_cut_index(body: list, budget: int = TAIL_TOKEN_BUDGET) -> int:
-    """First index of the preserved ``body`` tail that fits ``budget`` tokens.
-
-    Walks back from the end accumulating each message's estimated tokens and
-    returns the earliest index that fits, never splitting a tool_call /
-    tool_result pair. Sized with ``_msg_estimate_chars`` so oversized tool-call
-    arguments push their message into the folded head instead of being counted
-    as a handful of tokens in the preserved tail.
-    """
-    accumulated = 0
-    cut_idx = len(body)
-    for i in range(len(body) - 1, -1, -1):
-        msg_tokens = (_msg_estimate_chars(body[i]) // 4) + 10
-        if accumulated + msg_tokens > budget:
-            cut_idx = i + 1
-            break
-        accumulated += msg_tokens
-        cut_idx = i
-    while 0 < cut_idx < len(body) and body[cut_idx].get("role") == "tool":
-        cut_idx += 1
-    return cut_idx
-
-
-def _fix_tool_pairs(messages: list) -> None:
-    """Repair orphaned tool_call / tool_result pairs after compression.
-
-    Two fixes:
-      1. Remove tool results whose matching tool_call was compressed away.
-      2. Insert stub results for tool_calls whose results were compressed away.
-
-    Args:
-        messages: Message list (mutated in place).
-    """
-    # Collect all tool_call IDs from assistant messages
-    call_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls", []):
-                tc_id = tc.get("id", "")
-                if tc_id:
-                    call_ids.add(tc_id)
-
-    # Remove orphaned tool results
-    i = 0
-    while i < len(messages):
-        msg = messages[i]
-        if msg.get("role") == "tool" and msg.get("tool_call_id") not in call_ids:
-            messages.pop(i)
-        else:
-            i += 1
-
-    # Collect existing result IDs
-    result_ids: set[str] = set()
-    for msg in messages:
-        if msg.get("role") == "tool":
-            tcid = msg.get("tool_call_id", "")
-            if tcid:
-                result_ids.add(tcid)
-
-    # Insert stub results for orphaned tool_calls
-    inserts: list[tuple[int, dict]] = []
-    for idx, msg in enumerate(messages):
-        if msg.get("role") != "assistant":
-            continue
-        for tc in msg.get("tool_calls", []):
-            tc_id = tc.get("id", "")
-            if tc_id and tc_id not in result_ids:
-                stub = {
-                    "role": "tool",
-                    "tool_call_id": tc_id,
-                    "name": tc.get("function", {}).get("name", "unknown"),
-                    "content": _STUB_RESULT_CONTENT,
-                }
-                inserts.append((idx + 1, stub))
-                result_ids.add(tc_id)
-
-    for pos, stub in reversed(inserts):
-        messages.insert(pos, stub)
-
-
-def _attach_tool_call_thought_signatures(message: dict[str, Any], tool_calls: list) -> dict[str, Any]:
-    """Attach Gemini thought signatures to assistant replay tool calls.
-
-    The replay message is later converted back into LangChain messages from a
-    plain dict history. Keep signatures in both the provider-neutral
-    ``extra_content.thought_signature`` slot and Gemini's OpenAI-compatible
-    ``extra_content.google.thought_signature`` slot so both local replay tests
-    and the Gemini request injector can recover the value.
-    """
-    outbound_tool_calls = message.get("tool_calls")
-    if not isinstance(outbound_tool_calls, list):
-        return message
-
-    signatures_by_id: dict[str, str] = {}
-    signatures_by_index: dict[int, str] = {}
-    for index, tc in enumerate(tool_calls):
-        extra_content = getattr(tc, "extra_content", None)
-        signature = None
-        if isinstance(extra_content, dict):
-            signature = extra_content.get("thought_signature")
-            google_extra = extra_content.get("google")
-            if not signature and isinstance(google_extra, dict):
-                signature = google_extra.get("thought_signature") or google_extra.get(
-                    "thoughtSignature"
-                )
-        signature = signature or getattr(tc, "thought_signature", None)
-        if not signature:
-            continue
-        tc_id = getattr(tc, "id", None)
-        if tc_id:
-            signatures_by_id[str(tc_id)] = signature
-        signatures_by_index[index] = signature
-
-    if not signatures_by_id and not signatures_by_index:
-        return message
-
-    def attach(raw_tool_call: Any, index: int) -> None:
-        if not isinstance(raw_tool_call, dict):
-            return
-        signature = signatures_by_id.get(str(raw_tool_call.get("id"))) or signatures_by_index.get(index)
-        if not signature:
-            return
-        extra_content = raw_tool_call.setdefault("extra_content", {})
-        if not isinstance(extra_content, dict):
-            extra_content = {}
-            raw_tool_call["extra_content"] = extra_content
-        extra_content["thought_signature"] = signature
-        google = extra_content.setdefault("google", {})
-        if not isinstance(google, dict):
-            google = {}
-            extra_content["google"] = google
-        google["thought_signature"] = signature
-
-    for index, raw_tool_call in enumerate(outbound_tool_calls):
-        attach(raw_tool_call, index)
-
-    additional_kwargs = message.setdefault("additional_kwargs", {})
-    raw_tool_calls = additional_kwargs.setdefault(
-        "tool_calls",
-        copy.deepcopy(outbound_tool_calls),
-    )
-    if isinstance(raw_tool_calls, list):
-        for index, raw_tool_call in enumerate(raw_tool_calls):
-            attach(raw_tool_call, index)
-
-    return message
-
-
-# -- Structured summary templates ------------------------------------------
-
-_STRUCTURED_SUMMARY_PROMPT = """\
-Summarize this conversation for handoff to a fresh context window.
-This summary is the ONLY context available — omitted information is lost.
-
-Use EXACTLY this structure:
-
-## Goal
-What the user is trying to accomplish.
-
-## Constraints & Preferences
-User-stated requirements: risk tolerance, strategy parameters, asset preferences.
-
-## Progress
-### Done
-- Completed steps with key results and specific numbers.
-### In Progress
-- Current work when compression triggered.
-
-## Key Decisions
-Choices made and rationale.
-
-## Resolved Questions
-Questions already answered — do NOT re-answer these.
-
-## Pending User Asks
-Unfinished requests still needing action.
-
-## Relevant Files
-File paths, run_dir, signal engines, artifact locations.
-
-## Remaining Work
-What still needs to be done (background reference, NOT active instructions).
-
-## Critical Context
-Specific numbers, parameters, error messages, configuration values.
-
-## Tools & Patterns
-Which tools worked, what failed, effective approaches.
-
-IMPORTANT: This is a handoff — background reference, NOT active instructions.
-Preserve ALL specific numbers, file paths, and parameter values.
-{focus_section}
-Conversation to summarize:
-"""
-
-_FOCUS_SECTION = """
-FOCUS TOPIC: {topic}
-Allocate 60-70% of the summary budget to content related to this topic.
-Aggressively compress unrelated content to make room.
-"""
-
-_ITERATIVE_UPDATE_PROMPT = """\
-Update the existing summary with new conversation turns.
-
-PREVIOUS SUMMARY:
-{previous_summary}
-
-NEW TURNS TO INCORPORATE:
-{new_turns}
-
-Rules:
-- PRESERVE all existing information from the previous summary.
-- ADD new progress, decisions, and findings.
-- Move "In Progress" items to "Done" when completed.
-- Move answered questions to "Resolved Questions".
-- Keep the same section structure.
-- Do NOT drop any critical context from the previous summary.
-{focus_section}"""
-
-
-def _is_tool_success(result: str) -> bool:
-    """Return True if the tool result does not look like an error response."""
-    try:
-        data = json.loads(result)
-        if isinstance(data, dict):
-            status = str(data.get("status") or "").strip().casefold()
-            if status in {"error", "failed", "failure", "cancelled", "canceled"}:
-                return False
-            if data.get("ok") is False or data.get("success") is False:
-                return False
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return True
-
-
-# Provider tool-call markup that a model can emit as plain text on the
-# forced-text final iteration, where tool definitions are withheld. Releasing
-# it verbatim hands the user mojibake instead of an answer. Both DSML bar
-# spellings are covered: ASCII double bars and fullwidth double bars.
-_FORCED_TEXT_TOOL_CALL_RE = re.compile(
-    r"<\s*/?\s*(?:invoke|parameter|tool_calls|dsml)\b",
-    re.IGNORECASE,
+# --- Tool-result helpers, moved to src.agent.tool_results (issue #1624) ---
+# Re-exported here so existing ``from src.agent.loop import ...`` keeps working.
+from src.agent.tool_results import (  # noqa: E402
+    _FORCED_TEXT_TOOL_CALL_RE as _FORCED_TEXT_TOOL_CALL_RE,
+    _DSML_BAR_TOOL_CALL_RE as _DSML_BAR_TOOL_CALL_RE,
+    _TARGET_PATH_RE as _TARGET_PATH_RE,
+    _TARGET_ACTION_RE,
+    _failure_code,
+    _is_tool_success,
+    _looks_like_tool_call_syntax,
+    _named_target_paths,
+    _normalize_tool_run_dir,
+    _previously_archived as _previously_archived,
+    _archive_backtest_result,
 )
-_DSML_BAR_TOOL_CALL_RE = re.compile(
-    r"<\s*[|\u2502\uFF5C]{2}\s*(?:dsml|tool_calls|invoke)\b",
-    re.IGNORECASE,
+from src.agent.run_outcome import (  # noqa: E402
+    OutcomeInputs,
+    RunOutcome as RunOutcome,  # noqa: F401 — re-exported for callers/tests
+    build_end_event,
+    build_result_dict,
+    resolve_final_status,
 )
 
 
-def _looks_like_tool_call_syntax(content: str) -> bool:
-    """Return whether final text still contains provider tool-call DSL.
-
-    When tool calling is unavailable, a model may nonetheless answer with its
-    native tool-call markup as prose - ``<DSML>tool_calls>``, ``<invoke
-    name=...>``, or the fullwidth-vbar mojibake of the same. Such content is
-    not an answer and must not be released to the user as one.
-    """
-    if not content:
-        return False
-    return bool(
-        _FORCED_TEXT_TOOL_CALL_RE.search(content)
-        or _DSML_BAR_TOOL_CALL_RE.search(content)
-    )
-
-
-# Task target-file detection: a user message usually names the file to
-# create or update ("update C:\\...\\plan.md"). If a run approaches its
-# iteration cap without having written that file, the loop must remind the
-# model instead of ending "answered but incomplete".
-# Windows absolute paths may contain spaces (e.g. C:\Users\Emad Karimi\...),
-# so the drive-letter branch allows spaces and stops non-greedily at the first
-# ".md"; the POSIX and bare-name branches stay space-free word matches.
-_TARGET_PATH_RE = re.compile(
-    r"[A-Za-z]:\\[^<>|?*\x22\x27\r\n]+?\.md\b"
-    r"|/[\w./\\-]+\.md\b"
-    r"|\b[\w./\\-]+\.md\b"
+# --- LLM usage accounting, moved to src.agent.llm_usage (issue #1624) ---
+# Re-exported here so existing ``from src.agent.loop import ...`` keeps working.
+from src.agent.llm_usage import (  # noqa: E402
+    LLM_USAGE_ARTIFACT as LLM_USAGE_ARTIFACT,
+    _coerce_usage_int as _coerce_usage_int,
+    _normalize_llm_usage as _normalize_llm_usage,
+    _new_llm_usage_summary as _new_llm_usage_summary,
+    _record_llm_usage as _record_llm_usage,
 )
-_TARGET_ACTION_RE = re.compile(
-    r"update|create|write|add|make|edit|generate|overwrite|append"
-    r"|更新|创建|写|添加|修改|生成|建立|编制",
-    re.IGNORECASE,
-)
-
-
-def _named_target_paths(text: str) -> list[Path]:
-    """Return the .md file paths named in a user message (deduped).
-
-    Both absolute Windows paths and bare or relative filenames are matched.
-    """
-    seen: set[str] = set()
-    paths: list[Path] = []
-    for match in _TARGET_PATH_RE.finditer(text or ""):
-        raw = match.group(0).strip().strip("\x22\x27")
-        try:
-            p = Path(raw)
-        except (ValueError, OSError):
-            continue
-        if p.suffix != ".md":
-            continue
-        key = str(p).casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        paths.append(p)
-    return paths
-def _normalize_tool_run_dir(args: dict[str, Any], memory_run_dir: str | None) -> dict[str, Any]:
-    """Normalize ``run_dir`` in tool args to an absolute path when possible.
-
-    If the model supplies a relative ``run_dir`` (for example ``"."`` or
-    ``"risk_parity_run"``), resolve it against the active run directory.
-    """
-    normalized = dict(args)
-    if not memory_run_dir:
-        return normalized
-
-    if "run_dir" not in normalized:
-        normalized["run_dir"] = memory_run_dir
-        return normalized
-
-    run_dir_value = str(normalized["run_dir"]).strip()
-    if not run_dir_value:
-        normalized["run_dir"] = memory_run_dir
-        return normalized
-
-    candidate = Path(run_dir_value)
-    if not candidate.is_absolute():
-        normalized["run_dir"] = str((Path(memory_run_dir) / candidate).resolve())
-    return normalized
-
-
-#: Names the backtest an archived run currently describes, and the files that
-#: archive placed there, so the next one can replace exactly its own output.
-_ARCHIVE_MANIFEST = ".archived_backtest.json"
-
-
-def _previously_archived(target: Path) -> set[str]:
-    """Return the run-relative files the previous archive copied into ``target``.
-
-    The caller deletes what this returns, and the names are read back off disk,
-    so each one is confined to ``target`` here — a manifest carrying ``..`` must
-    not become a way to delete a file elsewhere. An unreadable or malformed
-    manifest yields an empty set: the worst case is the pre-#1094 merge for one
-    turn, which beats refusing to archive a backtest the user is waiting for.
-    """
-    try:
-        payload = json.loads((target / _ARCHIVE_MANIFEST).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    files = payload.get("files") if isinstance(payload, dict) else None
-    if not isinstance(files, list):
-        return set()
-    root = target.resolve()
-    return {
-        str(name)
-        for name in files
-        if isinstance(name, str)
-        and (root / name).resolve().is_relative_to(root)
-        and (root / name).resolve() != root
-    }
-
-
-def _archive_backtest_result(result: str, active_run_dir: str | None) -> bool:
-    """Copy a successful detached backtest into the active, reportable run.
-
-    The model may choose another allowed run directory while iterating.  The
-    CLI and web API, however, identify the turn by ``active_run_dir``.  Keep
-    that public identity stable by copying only deterministic backtest output
-    into the active run as soon as the backtest tool succeeds.
-
-    Both paths are re-validated here.  ``backtest`` already refuses a run_dir
-    outside the allowed roots, so today the source cannot be arbitrary — but
-    that invariant lives in another module and this function reads its path back
-    out of a *tool result* rather than from the validated arguments.  Checking
-    locally keeps a copy loop from depending on a guarantee made elsewhere.
-
-    The copy REPLACES the previous archive rather than merging with it (#1094).
-    An agent may backtest more than once in a turn, and the copy is a plain
-    merge, so a file only the earlier backtest produced used to survive
-    alongside the later one's output — one artifacts directory describing two
-    different runs, which ``/runs/{id}`` then lists as artifacts of the current
-    one.  Only files a previous archive placed here are removed, recorded in
-    :data:`_ARCHIVE_MANIFEST`; anything the active run wrote itself (notably
-    ``code/signal_engine.py``, written before ``backtest`` is called) is
-    untouched, which is why the manifest exists instead of a blanket wipe.
-    """
-    if not active_run_dir:
-        return False
-    try:
-        payload = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
-        return False
-    if not isinstance(payload, dict):
-        return False
-
-    source_value = payload.get("run_dir")
-    if not source_value:
-        return False
-    try:
-        source = safe_run_dir(str(source_value))
-        target = safe_run_dir(str(active_run_dir))
-    except ValueError:
-        logger.warning("Refusing to archive backtest output from outside the allowed run roots")
-        return False
-    if source == target or not (source / "artifacts" / "metrics.csv").is_file():
-        return False
-
-    target.mkdir(parents=True, exist_ok=True)
-    previously_archived = _previously_archived(target)
-    archived: list[str] = []
-    for directory in ("artifacts", "code", "logs"):
-        source_dir = source / directory
-        if source_dir.is_dir():
-            shutil.copytree(source_dir, target / directory, dirs_exist_ok=True)
-            archived += [
-                path.relative_to(source).as_posix()
-                for path in source_dir.rglob("*")
-                if path.is_file()
-            ]
-    for stale in previously_archived - set(archived):
-        (target / stale).unlink(missing_ok=True)
-    (target / _ARCHIVE_MANIFEST).write_text(
-        json.dumps({"source_run": source.name, "files": sorted(archived)}, indent=2),
-        encoding="utf-8",
-    )
-    for filename in (
-        "config.json",
-        "design_spec.json",
-        "planner_output.json",
-        "rag_metadata.json",
-        "review_report.json",
-        "run_card.json",
-        "run_card.md",
-        "llm_usage.json",
-    ):
-        source_file = source / filename
-        if source_file.is_file():
-            shutil.copy2(source_file, target / filename)
-    return (target / "artifacts" / "metrics.csv").is_file()
 
 
 class AgentLoop:
@@ -1113,6 +216,8 @@ class AgentLoop:
                 ),
             )
         self._llm_runtime = runtime_snapshot
+        self._active_model_id = runtime_snapshot.configured_model
+        self._active_model_source = "configured"
         self.memory = memory or WorkspaceMemory()
         self._event_callback = event_callback
         self.max_iterations = max_iterations
@@ -1157,8 +262,15 @@ class AgentLoop:
         self._readonly_replay_cache: dict[tuple[str, str], str] = {}
         self._readonly_replay_ready: set[tuple[str, str]] = set()
         self._readonly_replay_protected: set[tuple[str, str]] = set()
+        # Replayed tool_call_ids whose restored payload no successful model
+        # request has carried yet (message identity, not call identity).
+        self._readonly_replay_visibility_pending: set[str] = set()
         self._readonly_replay_recoveries = 0
         self._tool_progress = ToolProgress()
+        self._context_meter = ContextMeter()
+        self._learned_context_window: int | None = None
+        self._compacted_to_tokens: int | None = None
+        self._tool_schema_tokens = 0
 
     def cancel(self) -> None:
         """Cancel the current loop.
@@ -1278,8 +390,16 @@ class AgentLoop:
         self._readonly_replay_cache = {}
         self._readonly_replay_ready = set()
         self._readonly_replay_protected = set()
+        self._readonly_replay_visibility_pending = set()
         self._readonly_replay_recoveries = 0
         self._tool_progress = ToolProgress()
+        self._context_meter = ContextMeter()
+        self._learned_context_window: int | None = None
+        self._compacted_to_tokens: int | None = None
+        # Sent with every request and never compacted, so they count against
+        # the window exactly like the system prompt.
+        definitions = getattr(self.registry, "get_definitions", None)
+        self._tool_schema_tokens = estimate_tokens(definitions()) if callable(definitions) else 0
         run_started_wall = _time.time()
 
         state_store = RunStateStore()
@@ -1346,6 +466,11 @@ class AgentLoop:
         empty_model_response_iter: int | None = None
         consecutive_empty_responses = 0
         grounding_revisions = 0
+        # A normal grounding correction is a text revision, not a new research
+        # turn. Explicit grounding recovery (identity / missing price evidence)
+        # keeps tools available; ordinary correction turns do not.
+        grounding_correction_text_only = False
+        pending_grounding_draft = ""
         llm_usage_summary = _new_llm_usage_summary(self.llm)
         last_response_model: str | None = None
         goal_continuations = 0
@@ -1385,28 +510,28 @@ class AgentLoop:
                     notif_text = "\n".join(f"[bg:{n['task_id']}] {n['status']}: {n['result']}" for n in notifs)
                     messages.append({"role": "user", "content": f"<background-results>\n{notif_text}\n</background-results>\n\n<system>Continue processing with the background results above.</system>"})
 
-                # Estimate transcript size once; each compaction layer below
-                # escalates only when its own token threshold is crossed.
-                tokens = estimate_tokens(messages)
-
-                # Layer 1: microcompact — prune old tool results only under
-                # memory pressure, so short, low-pressure runs keep their full
-                # tool history available for the model to reference instead of
-                # having every result past the most recent few cleared.
-                if tokens > int(_token_threshold() * 0.5):
-                    self._microcompact_and_unblock(messages, trace, iteration)
+                if _override("TOKEN_THRESHOLD") is not None:
+                    # Test hook: a monkeypatched module-level TOKEN_THRESHOLD
+                    # keeps the old estimate-based layers so compaction tests
+                    # can force each layer with a tiny number.
                     tokens = estimate_tokens(messages)
-
-                # Layer 2: context collapse (fold long text, zero API cost)
-                if tokens > int(_token_threshold() * 0.7):
-                    _context_collapse(messages)
-                    tokens = estimate_tokens(messages)
-
-                # Layer 3: auto_compact (token threshold exceeded)
-                _tok_threshold = _token_threshold()
-                if tokens > _tok_threshold:
-                    logger.info(f"Auto compact triggered: {tokens} tokens > {_tok_threshold}")
-                    self._auto_compact(messages, run_dir, trace, iteration=current_iter)
+                    if tokens > int(_token_threshold() * 0.5):
+                        self._microcompact_and_unblock(
+                            messages,
+                            trace,
+                            iteration,
+                            preserve_tool_call_ids=self._readonly_replay_visibility_pending,
+                        )
+                        tokens = estimate_tokens(messages)
+                    if tokens > int(_token_threshold() * 0.7):
+                        _context_collapse(messages, preserve_tool_call_ids=self._readonly_replay_visibility_pending)
+                        tokens = estimate_tokens(messages)
+                    _tok_threshold = _token_threshold()
+                    if tokens > _tok_threshold:
+                        logger.info(f"Auto compact triggered: {tokens} tokens > {_tok_threshold}")
+                        self._auto_compact(messages, run_dir, trace, iteration=current_iter)
+                else:
+                    self._compact_to_budget(messages, run_dir, trace, iteration, current_iter)
 
                 logger.info(f"ReAct iteration {iteration}/{self.max_iterations}")
 
@@ -1529,11 +654,26 @@ class AgentLoop:
                         reasoning_event["tail"] = reasoning_tail
                     self._emit("reasoning_delta", reasoning_event)
 
-                # On last iteration, drop tool definitions to force text output
+                # The final iteration is always text-only. A grounding correction
+                # whose validator requested no explicit recovery is text-only too:
+                # the model must revise from evidence already gathered instead of
+                # starting another research/refetch loop merely to reformat a draft.
                 is_last_iteration = (iteration == self.max_iterations)
-                tool_defs = None if is_last_iteration else self.registry.get_definitions()
+                correction_text_only = grounding_correction_text_only
+                tool_defs = (
+                    None
+                    if is_last_iteration or correction_text_only
+                    else self.registry.get_definitions()
+                )
                 if is_last_iteration:
                     trace.write({"type": "forced_text_only", "iter": current_iter})
+                elif correction_text_only:
+                    trace.write(
+                        {
+                            "type": "grounding_correction_text_only",
+                            "iter": current_iter,
+                        }
+                    )
 
                 _llm_timeout_s = _llm_timeout_seconds()
                 llm_timeout = _llm_timeout_s if _llm_timeout_s > 0 else None
@@ -1558,14 +698,23 @@ class AgentLoop:
                     # provider's Retry-After header (bounded by the configured
                     # cap) when present. A successful retry does not reset the
                     # streak — only a clean first-attempt success does.
-                    if not exc.retryable:
+                    context_overflow = is_context_overflow(str(exc))
+                    if not exc.retryable and not context_overflow:
                         raise
-                    stream_failure_streak += 1
-                    retry_delay_s = (
-                        min(exc.retry_after_s, _stream_retry_max_delay_s())
-                        if exc.retry_after_s is not None
-                        else _stream_retry_backoff_s(stream_failure_streak)
-                    )
+                    if context_overflow:
+                        # Deterministic, so no backoff: shrink to the limit the
+                        # provider reported and send once more.
+                        self._recover_context_overflow(
+                            exc, messages, run_dir, trace, iteration, current_iter
+                        )
+                        retry_delay_s = 0.0
+                    else:
+                        stream_failure_streak += 1
+                        retry_delay_s = (
+                            min(exc.retry_after_s, _stream_retry_max_delay_s())
+                            if exc.retry_after_s is not None
+                            else _stream_retry_backoff_s(stream_failure_streak)
+                        )
                     logger.warning(
                         "Provider stream failed (iter %s), retrying once in %.2fs: %s",
                         current_iter,
@@ -1576,7 +725,7 @@ class AgentLoop:
                         "stream_reset",
                         {
                             "iter": current_iter,
-                            "reason": "provider_stream_retry",
+                            "reason": "context_overflow" if context_overflow else "provider_stream_retry",
                             "provider": exc.provider,
                             "model": exc.model,
                             "retry_delay_s": retry_delay_s,
@@ -1608,6 +757,8 @@ class AgentLoop:
                 else:
                     stream_failure_streak = 0
 
+                self._consume_readonly_replay_visibility(messages, trace, current_iter)
+
                 # Cancelled mid-stream: discard this turn's partial response and
                 # end the run now, without executing any of its tool calls.
                 if self._cancel_event.is_set():
@@ -1617,8 +768,14 @@ class AgentLoop:
                 self._last_activity_wall = _time.time()
 
                 usage = getattr(response, "usage_metadata", None)
-                if getattr(response, "response_model", None):
-                    last_response_model = response.response_model
+                current_response_model = getattr(response, "response_model", None)
+                # `messages` is still exactly what this request sent.
+                self._context_meter.observe(
+                    usage.get("input_tokens") if isinstance(usage, dict) else None,
+                    messages,
+                )
+                if current_response_model:
+                    last_response_model = current_response_model
                 usage_delta = _record_llm_usage(
                     run_dir,
                     llm_usage_summary,
@@ -1706,8 +863,46 @@ class AgentLoop:
                 # Not filtered — reset the consecutive-skip counter.
                 consecutive_content_filter_count = 0
 
-                if not response.has_tool_calls:
-                    final_content = response.content or ""
+                forced_grounding_release = False
+                if correction_text_only and response.has_tool_calls:
+                    # An unoffered call consumes the same bounded correction
+                    # budget as an invalid revised draft, but is never executed
+                    # or inserted into the transcript as an unanswered tool call.
+                    grounding_revisions += 1
+                    trace.write(
+                        {
+                            "type": "grounding_correction_tool_call_blocked",
+                            "iter": current_iter,
+                            "round": grounding_revisions,
+                        }
+                    )
+                    if streamed_chars:
+                        self._emit(
+                            "stream_reset",
+                            {"iter": current_iter, "reason": "grounding_tool_call_blocked"},
+                        )
+                    forced_grounding_release = (
+                        grounding_revisions >= MAX_GROUNDING_REVISIONS
+                        or iteration == self.max_iterations
+                    )
+                    if not forced_grounding_release:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "<system>This is a grounding correction turn. "
+                                    "Do not call tools. Revise the previous draft using "
+                                    "the evidence already gathered, or remove claims "
+                                    "that cannot be supported.</system>"
+                                ),
+                            }
+                        )
+                        continue
+
+                if forced_grounding_release or not response.has_tool_calls:
+                    # At the cap, release the last actual draft through the
+                    # existing gate. The forbidden call's text is not an answer.
+                    final_content = pending_grounding_draft if forced_grounding_release else response.content or ""
                     syntax_fallback_emitted = False
                     if not final_content:
                         empty_model_response_iter = iteration
@@ -1787,7 +982,11 @@ class AgentLoop:
                         )
                         syntax_fallback_emitted = True
                     if self._grounding is not None:
-                        validation = self._grounding.validate_final_answer(final_content)
+                        validation = (
+                            self._grounding.revalidate(final_content)
+                            if forced_grounding_release
+                            else self._grounding.validate_final_answer(final_content)
+                        )
                         if not validation.valid:
                             # A draft whose only defect is a missing provenance
                             # word (source / currency / symbol suffix) gets the
@@ -1818,34 +1017,38 @@ class AgentLoop:
                             # the gate, not answer text.
                             final_content = validation.released_text
                         if not validation.valid:
-                            trace.write_text_entry(
-                                {
-                                    "type": "answer_rejected",
-                                    "iter": current_iter,
-                                    "issues": validation.issues,
-                                },
-                                field="content",
-                                value=final_content,
-                                offload_kind=f"answer-rejected-{current_iter}",
-                            )
-                            if not buffer_text_output and streamed_chars:
-                                # The stream showed this draft up to its first unchecked
-                                # number; the next draft or the released answer replaces it.
-                                self._emit(
-                                    "stream_reset",
-                                    {"iter": current_iter, "reason": "grounding_rejected"},
+                            if not forced_grounding_release:
+                                trace.write_text_entry(
+                                    {
+                                        "type": "answer_rejected",
+                                        "iter": current_iter,
+                                        "issues": validation.issues,
+                                    },
+                                    field="content",
+                                    value=final_content,
+                                    offload_kind=f"answer-rejected-{current_iter}",
                                 )
-                            react_trace.append(
-                                {
-                                    "type": "answer_rejected",
-                                    "issues": validation.issues,
-                                }
-                            )
-                            messages.append(
-                                {"role": "assistant", "content": final_content}
-                            )
+                                if not buffer_text_output and streamed_chars:
+                                    # The stream showed this draft up to its first unchecked
+                                    # number; the next draft or the released answer replaces it.
+                                    self._emit(
+                                        "stream_reset",
+                                        {"iter": current_iter, "reason": "grounding_rejected"},
+                                    )
+                                react_trace.append(
+                                    {
+                                        "type": "answer_rejected",
+                                        "issues": validation.issues,
+                                    }
+                                )
+                                messages.append(
+                                    {"role": "assistant", "content": final_content}
+                                )
                             recovery = self._grounding.recovery_action(validation)
-                            if recovery is not None and iteration < self.max_iterations:
+                            if not forced_grounding_release and recovery is not None and iteration < self.max_iterations:
+                                # Explicit bounded recovery is the one case where
+                                # the next turn is allowed to research again.
+                                grounding_correction_text_only = False
                                 self._grounding.record_recovery(recovery)
                                 trace.write(
                                     {
@@ -1873,13 +1076,15 @@ class AgentLoop:
                                 )
                                 final_content = ""
                                 continue
-                            messages.append(
-                                {
-                                    "role": "user",
-                                    "content": f"<system>{self._grounding.correction_prompt(validation)}</system>",
-                                }
-                            )
+                            if not forced_grounding_release:
+                                messages.append(
+                                    {
+                                        "role": "user",
+                                        "content": f"<system>{self._grounding.correction_prompt(validation)}</system>",
+                                    }
+                                )
                             rejected_draft = final_content
+                            pending_grounding_draft = rejected_draft
                             final_content = ""
                             # The budget counts drafts rejected on this
                             # correction path; the last one is released with
@@ -1888,11 +1093,14 @@ class AgentLoop:
                             # rather than rewording), so a run that had to
                             # resolve its symbol first still gets a corrected
                             # draft.
-                            grounding_revisions += 1
+                            if not forced_grounding_release:
+                                grounding_revisions += 1
                             if (
-                                iteration < self.max_iterations
+                                not forced_grounding_release
+                                and iteration < self.max_iterations
                                 and grounding_revisions < MAX_GROUNDING_REVISIONS
                             ):
+                                grounding_correction_text_only = True
                                 self._emit(
                                     "grounding_status",
                                     {
@@ -1975,10 +1183,14 @@ class AgentLoop:
                                     "text_delta",
                                     {"delta": final_content[len(shown):], "iter": current_iter},
                                 )
+                    # The correction has ended. A goal continuation is a new
+                    # research turn and must regain its normal tool access.
+                    grounding_correction_text_only = False
+                    pending_grounding_draft = ""
                     should_continue_goal = False
                     continuation_snapshot = None
                     _max_cont = _goal_max_continuations()
-                    if active_goal_id and session_id and _max_cont > 0:
+                    if not forced_grounding_release and active_goal_id and session_id and _max_cont > 0:
                         try:
                             if goal_store is None:
                                 from src.goal import GoalStore
@@ -2075,11 +1287,18 @@ class AgentLoop:
                     response.tool_calls,
                     content=response.content,
                     reasoning_content=response.reasoning_content or thinking_text or None,
+                    provider_items=getattr(response, "provider_items", None),
                 )
                 _attach_tool_call_thought_signatures(assistant_message, response.tool_calls)
                 messages.append(assistant_message)
 
                 # Execute tools with read/write batching
+                self._active_model_id = (
+                    current_response_model or self._llm_runtime.configured_model
+                )
+                self._active_model_source = (
+                    "provider_response" if current_response_model else "configured"
+                )
                 compact_requested, focus_topic = self._process_tool_calls(
                     response.tool_calls, context, messages, trace, react_trace, current_iter,
                 )
@@ -2088,8 +1307,8 @@ class AgentLoop:
                     not self._cancel_event.is_set()
                     and self._tool_progress.finish_iteration()
                 ):
-                    no_progress_reason = "no_progress: " + RECOVERY_MESSAGE
-                    final_content = RECOVERY_MESSAGE
+                    final_content = self._tool_progress.recovery_message()
+                    no_progress_reason = "no_progress: " + final_content
                     trace.write(
                         {
                             "type": "no_progress",
@@ -2140,108 +1359,55 @@ class AgentLoop:
         # Determine final status. The reason is also propagated into the
         # returned dict so SessionService can surface a meaningful UI
         # message instead of "Execution failed: unknown" (issue #114).
-        final_reason: str | None = None
-        if self._stall_reason is not None:
-            # The stall watchdog already wrote the failed state; keep this
-            # run's terminal status honest instead of overwriting it.
-            final_reason = self._stall_reason
-            final_status = "failed"
-        elif self._cancel_event.is_set():
-            final_reason = "cancelled by user"
-            state_store.mark_cancelled(run_dir, final_reason)
-            final_status = "cancelled"
-        elif no_progress_reason is not None:
-            final_reason = no_progress_reason
-            state_store.mark_failure(run_dir, final_reason)
-            final_status = "failed"
-        elif content_filter_circuit_breaker:
-            final_reason = (
-                f"content_filter_circuit_breaker: "
-                f"{MAX_CONSECUTIVE_CONTENT_FILTER_SKIPS} consecutive LLM "
-                "responses were blocked by content moderation"
-            )
-            state_store.mark_failure(run_dir, final_reason)
-            final_status = "failed"
-        elif (run_dir / "artifacts" / "metrics.csv").exists() or final_content:
-            state_store.mark_success(run_dir)
-            final_status = "success"
-            if self._released_fallback:
-                final_reason = self._released_fallback_reason or (
-                    "final answer degraded to the deterministic fallback after "
-                    f"{self._grounding.validation_count if self._grounding else 0} "
-                    "rejected drafts could not be corrected within the iteration budget"
-                )
-            elif not self._released_fallback:
-                pending_directive = self._pending_write_directive(
+        outcome = resolve_final_status(
+            OutcomeInputs(
+                stall_reason=self._stall_reason,
+                cancelled=self._cancel_event.is_set(),
+                no_progress_reason=no_progress_reason,
+                content_filter_circuit_breaker=content_filter_circuit_breaker,
+                has_output=(run_dir / "artifacts" / "metrics.csv").exists() or bool(final_content),
+                released_fallback=self._released_fallback,
+                released_fallback_reason=self._released_fallback_reason,
+                grounding_validation_count=(
+                    self._grounding.validation_count if self._grounding else 0
+                ),
+                pending_write_directive=lambda: self._pending_write_directive(
                     user_message, run_started_wall
-                )
-                if pending_directive:
-                    final_reason = (
-                        "run ended without writing the task target file(s): "
-                        + pending_directive
-                    )
-                    self._released_fallback = True
-        elif empty_model_response_iter is not None:
-            provider = self._llm_runtime.provider
-            model = self._llm_runtime.configured_model or "(unset)"
-            final_reason = (
-                "empty_model_response: "
-                f"provider={provider} model={model} iteration {empty_model_response_iter} "
-                "returned no content and no tool calls"
+                ),
+                empty_model_response_iter=empty_model_response_iter,
+                empty_response_provider=self._llm_runtime.provider,
+                empty_response_model=self._llm_runtime.configured_model or "(unset)",
+                max_iterations=self.max_iterations,
             )
-            state_store.mark_failure(run_dir, final_reason)
-            final_status = "failed"
-        else:
-            final_reason = (
-                f"reached max iterations ({self.max_iterations}) without final answer"
-            )
-            state_store.mark_failure(run_dir, final_reason)
-            final_status = "failed"
+        )
+        final_reason = outcome.reason
+        if outcome.mark == "cancelled":
+            state_store.mark_cancelled(run_dir, final_reason or "cancelled by user")
+        elif outcome.mark == "failure":
+            state_store.mark_failure(run_dir, final_reason or "")
+        elif outcome.mark == "success":
+            state_store.mark_success(run_dir)
+        if outcome.mark == "success" and outcome.degraded and final_reason and not self._released_fallback:
+            # A success that ended without writing the target file(s): the
+            # pre-extraction code flagged it degraded only for this case.
+            self._released_fallback = True
 
-        end_event: dict[str, Any] = {
-            "type": "end",
-            "iter": self._run_iteration,
-            "status": final_status,
-            "iterations": iteration,
-        }
-        if self._released_fallback:
-            end_event["degraded"] = True
-        if final_reason is not None:
-            end_event["reason"] = final_reason
-        trace.write(end_event)
+        trace.write(build_end_event(outcome, self._run_iteration, iteration))
         trace.close()
 
-        result: dict[str, Any] = {
-            "status": final_status,
-            "run_dir": str(run_dir),
-            "run_id": run_dir.name,
-            "content": final_content,
-            "react_trace": react_trace,
-            "iterations": iteration,
-            "max_iterations": self.max_iterations,
-        }
-        if self._released_fallback:
-            result["degraded"] = True
-        configured_model = self._llm_runtime.configured_model
-        result.update(
-            {
-                "provider": self._llm_runtime.provider,
-                "configured_model": configured_model,
-                "model": last_response_model or configured_model,
-                "model_source": "provider_response" if last_response_model else "configured",
-                "reasoning_effort": self._llm_runtime.reasoning_effort,
-            }
+        result = build_result_dict(
+            outcome,
+            run_dir,
+            react_trace,
+            iteration,
+            self.max_iterations,
+            final_content,
+            self._llm_runtime,
+            last_response_model,
+            content_filter_count,
         )
-        if final_reason is not None:
-            result["reason"] = final_reason
 
         self._run_done.set()
-
-        cf_warnings = compute_content_filter_warnings(
-            content_filter_count, max(1, iteration),
-        )
-        if cf_warnings:
-            result["content_filter_warnings"] = cf_warnings
 
         return result
 
@@ -2359,10 +1525,36 @@ class AgentLoop:
         for tc in tool_calls:
             # Layer 4: compact tool — mark then defer execution
             if tc.name == "compact":
-                compact_requested = True
-                focus_topic = tc.arguments.get("focus_topic", "")
-                messages.append(context.format_tool_result(tc.id, "compact", '{"status":"ok","message":"Compressing..."}'))
-                trace.write({"type": "compact_requested", "iter": iteration})
+                self._tool_progress.note("compact", "compact")
+                self._emit(
+                    "tool_call",
+                    {"tool": "compact", "arguments": {}, "iter": iteration, "call_id": tc.id},
+                )
+                budget = None if _override("TOKEN_THRESHOLD") is not None else self._context_budget(messages)
+                tokens = self._prompt_tokens(messages) if budget is not None else 0
+                if budget is not None and tokens <= budget.micro_at:
+                    # Summarising a prompt this small only destroys evidence the
+                    # model will then fetch again: decline, and say why.
+                    declined = json.dumps({
+                        "status": "ok",
+                        "skipped": True,
+                        "message": (
+                            f"Compaction not needed: the prompt is {tokens} tokens, "
+                            f"under the {budget.micro_at}-token threshold. Earlier "
+                            "tool results are still in context; keep using them."
+                        ),
+                    })
+                    messages.append(context.format_tool_result(tc.id, "compact", declined))
+                    trace.write({"type": "compact_declined", "iter": iteration, "prompt_tokens": tokens})
+                else:
+                    compact_requested = True
+                    focus_topic = tc.arguments.get("focus_topic", "")
+                    messages.append(context.format_tool_result(tc.id, "compact", '{"status":"ok","message":"Compressing..."}'))
+                    trace.write({"type": "compact_requested", "iter": iteration})
+                self._emit(
+                    "tool_result",
+                    {"tool": "compact", "status": "ok", "elapsed_ms": 0, "call_id": tc.id},
+                )
                 continue
 
             tool_def = self.registry.get(tc.name)
@@ -2430,6 +1622,7 @@ class AgentLoop:
                         tc.id, tc.name, truncate_tool_result(restored)
                     )
                 )
+                self._readonly_replay_visibility_pending.add(tc.id)
                 self._successful_call_keys[tc.id] = dedup_key
                 self._called_ok.add(dedup_key)
                 self._readonly_replay_ready.discard(dedup_key)
@@ -2451,6 +1644,7 @@ class AgentLoop:
                     "recovery_limit": MAX_READONLY_REPLAY_RECOVERIES,
                 })
                 react_trace.append({"type": "tool_result_replayed", "tool": tc.name})
+                self._tool_progress.note("replayed", tc.name)
                 self._emit(
                     "tool_result",
                     {
@@ -2486,6 +1680,7 @@ class AgentLoop:
                 skip_msg = json.dumps({"skipped": True, "reason": reason})
                 messages.append(context.format_tool_result(tc.id, tc.name, skip_msg))
                 trace.write({"type": "tool_skipped", "iter": iteration, "tool": tc.name})
+                self._tool_progress.note("skipped", tc.name)
                 react_trace.append({"type": "tool_skipped", "tool": tc.name})
                 continue
 
@@ -2509,6 +1704,7 @@ class AgentLoop:
                         "call_id": tc.id,
                     })
                     react_trace.append({"type": "tool_result_cached", "tool": tc.name})
+                    self._tool_progress.note("cached", tc.name)
                     self._emit(
                         "tool_result",
                         {
@@ -2594,6 +1790,7 @@ class AgentLoop:
             react_trace: Compact returned trace.
             iteration: Current iteration.
         """
+        self._tool_progress.note("blocked", tc.name, _failure_code(result))
         args = _normalize_tool_run_dir(tc.arguments, self.memory.run_dir)
         redacted_args = redact_payload(args)
         event_args = {key: str(value)[:200] for key, value in redacted_args.items()}
@@ -2981,9 +2178,53 @@ class AgentLoop:
         if not p.is_absolute() and self.memory.run_dir:
             p = Path(self.memory.run_dir) / p
         try:
-            self._written_files.add(str(p.resolve()).casefold())
+            resolved = p.resolve()
+            self._written_files.add(str(resolved).casefold())
         except (OSError, ValueError):
+            resolved = p
             self._written_files.add(str(p).casefold())
+
+        if not self.memory.run_dir:
+            return
+        run_root = Path(self.memory.run_dir).resolve()
+        try:
+            relative = resolved.relative_to(run_root).as_posix()
+        except ValueError:
+            return
+        if relative not in {"config.json", "code/signal_engine.py"}:
+            return
+
+        metadata_path = run_root / "strategy_provenance.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            files = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Could not read strategy model provenance; update skipped: %s",
+                exc,
+            )
+            return
+        else:
+            if not isinstance(metadata, dict):
+                logger.warning("Invalid strategy model provenance; update skipped.")
+                return
+            files = metadata.get("files", {})
+            if not isinstance(files, dict):
+                logger.warning("Invalid strategy model provenance files; update skipped.")
+                return
+        files[relative] = {
+            "provider": self._llm_runtime.provider or None,
+            "model_id": self._active_model_id or None,
+            "model_source": self._active_model_source,
+        }
+        try:
+            metadata_path.write_text(
+                json.dumps({"files": files}, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning("Could not write strategy model provenance: %s", exc)
 
     def _pending_write_directive(
         self, user_message: str, run_started_wall: float
@@ -3044,7 +2285,128 @@ class AgentLoop:
             "file write is a failure."
         )
 
-    def _microcompact_and_unblock(self, messages: list, trace: TraceWriter, iteration: int) -> list[str]:
+    def _context_budget(self, messages: list) -> CompactionBudget:
+        """Compaction thresholds for the active model's real context window."""
+        cfg = get_env_config()
+        provider = (cfg.llm.langchain_provider or "").strip().lower().replace("_", "-")
+        model = getattr(self.llm, "model_name", "") or cfg.llm.langchain_model_name
+        window, source = resolve_window(
+            provider,
+            str(model or ""),
+            env_window=cfg.agent_tuning.vibe_trading_context_window,
+            learned_window=self._learned_context_window,
+        )
+        return CompactionBudget(
+            window=window,
+            source=source,
+            max_tokens=cfg.agent_tuning.vibe_trading_context_max_tokens,
+            static_tokens=self._context_meter.static(messages, self._tool_schema_tokens),
+        )
+
+    def _prompt_tokens(self, messages: list) -> int:
+        """Real-token size the next request would have."""
+        return self._context_meter.tokens(messages, self._tool_schema_tokens)
+
+    def _compact_to_budget(
+        self,
+        messages: list,
+        run_dir: Path,
+        trace: TraceWriter,
+        iteration: int,
+        current_iter: int,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Run the compaction layers the prompt has actually grown into.
+
+        Args:
+            messages: Message list, mutated in place.
+            run_dir: Active run directory.
+            trace: Run trace.
+            iteration: Loop-local iteration (the microcompact event's key).
+            current_iter: Session-wide iteration number.
+            force: Summarise even under budget (the provider said it overflowed).
+        """
+        budget = self._context_budget(messages)
+        tokens = self._prompt_tokens(messages)
+        if tokens > budget.micro_at:
+            # Oldest results first and only until the prompt fits again:
+            # clearing all but the last few is what sent a 12-company
+            # comparison back to re-fetch its own evidence.
+            self._microcompact_and_unblock(
+                messages,
+                trace,
+                iteration,
+                target_tokens=budget.micro_at,
+                measure=self._prompt_tokens,
+                preserve_tool_call_ids=self._readonly_replay_visibility_pending,
+            )
+            tokens = self._prompt_tokens(messages)
+        if tokens > budget.collapse_at:
+            _context_collapse(messages, preserve_tool_call_ids=self._readonly_replay_visibility_pending)
+            tokens = self._prompt_tokens(messages)
+        # A summary keeps the static prompt plus a ~20K-token tail, so on a
+        # window that small the prompt stays over the line after compacting;
+        # without this every later iteration paid for another summary call.
+        regrown = (
+            self._compacted_to_tokens is None
+            or tokens > self._compacted_to_tokens + MIN_CONVERSATION_TOKENS
+        )
+        if force or (tokens > budget.compact_at and regrown):
+            logger.info(
+                "Auto compact triggered: %s real tokens > %s (window %s from %s)",
+                tokens, budget.compact_at, budget.window, budget.source,
+            )
+            self._auto_compact(messages, run_dir, trace, iteration=current_iter)
+            self._compacted_to_tokens = self._prompt_tokens(messages)
+
+    def _recover_context_overflow(
+        self,
+        exc: Exception,
+        messages: list,
+        run_dir: Path,
+        trace: TraceWriter,
+        iteration: int,
+        current_iter: int,
+    ) -> None:
+        """Learn the real window from a context-length error and compact to it.
+
+        A model missing from ``context_windows.json`` runs on the default
+        window; if that is larger than the real one the provider says so, and
+        the run shrinks to the limit instead of failing.
+
+        Args:
+            exc: The provider error that reported the overflow.
+            messages: Message list, mutated in place.
+            run_dir: Active run directory.
+            trace: Run trace.
+            iteration: Loop-local iteration.
+            current_iter: Session-wide iteration number.
+        """
+        sent = self._prompt_tokens(messages)
+        stated = parse_context_limit(str(exc))
+        # The provider's own number when it gives one; otherwise the prompt
+        # that did not fit, with a margin for our estimate of it.
+        self._learned_context_window = stated or int(sent * 0.9)
+        trace.write({
+            "type": "context_overflow",
+            "iter": current_iter,
+            "prompt_tokens": sent,
+            "stated_limit": stated,
+            "learned_window": self._learned_context_window,
+        })
+        self._compact_to_budget(messages, run_dir, trace, iteration, current_iter, force=True)
+
+    def _microcompact_and_unblock(
+        self,
+        messages: list,
+        trace: TraceWriter,
+        iteration: int,
+        *,
+        target_tokens: Optional[int] = None,
+        measure: Optional[Callable[[list], int]] = None,
+        preserve_tool_call_ids: Optional[set[str]] = None,
+    ) -> list[str]:
         """Run layer-1 microcompact and re-open lost readonly call identities.
 
         A readable result for another argument variant, or a synthetic skip,
@@ -3058,12 +2420,20 @@ class AgentLoop:
                 whenever the ledger is re-opened, because this layer used to
                 act silently and left no evidence for diagnosis.
             iteration: Current ReAct iteration, recorded on the trace event.
+            target_tokens: Clear oldest-first only until the prompt fits.
+            measure: Prompt-size function for ``target_tokens``.
+            preserve_tool_call_ids: Replayed results still owed one model request.
 
         Returns:
             The tool names re-opened, for callers and tests to assert on.
         """
         readable_before = self._readable_success_keys(messages)
-        _microcompact(messages)
+        _microcompact(
+            messages,
+            target_tokens=target_tokens,
+            measure=measure,
+            preserve_tool_call_ids=preserve_tool_call_ids,
+        )
         unreadable_tools = self._unblock_lost_readonly_results(messages, readable_before)
         if unreadable_tools:
             trace.write({
@@ -3072,6 +2442,21 @@ class AgentLoop:
                 "tools": unreadable_tools,
             })
         return unreadable_tools
+
+    def _consume_readonly_replay_visibility(
+        self, messages: list, trace: TraceWriter, iteration: int
+    ) -> None:
+        """Release replay leases once a successful model request carried them."""
+        visible = {
+            msg.get("tool_call_id")
+            for msg in messages
+            if msg.get("role") == "tool"
+            and msg.get("tool_call_id") in self._readonly_replay_visibility_pending
+            and not _result_data_gone(msg.get("content"))
+        }
+        for call_id in sorted(visible):
+            self._readonly_replay_visibility_pending.discard(call_id)
+            trace.write({"type": "replay_visibility_consumed", "iter": iteration, "call_id": call_id})
 
     def _readable_success_keys(self, messages: list) -> set[tuple[str, str]]:
         """Identify surviving successful results, not synthetic skip/stub calls."""
@@ -3166,7 +2551,7 @@ class AgentLoop:
                 self._successful_call_keys[tc.id] = recorded_key
             if tc.name == "backtest":
                 try:
-                    _archive_backtest_result(result, self.memory.run_dir)
+                    _archive_backtest_result(result, self.memory.run_dir, source_call_id=tc.id)
                 except OSError as exc:
                     logger.warning("Could not archive backtest output into active run: %s", exc)
             if tc.name in {"write_file", "edit_file"}:
@@ -3235,6 +2620,18 @@ class AgentLoop:
             iteration=iteration,
         )
         preview = trace_result[:200]
+        artifact = None
+        if status == "ok" and tc.name in {"write_file", "render_shadow_report"}:
+            try:
+                payload = json.loads(trace_result)
+                from src.tools.report_artifacts import report_path
+                report_id = payload.get("report_id", "")
+                path = report_path(report_id) if isinstance(report_id, str) else None
+                if path is not None:
+                    artifact = {"report_id": report_id, "filename": path.name,
+                                "download_url": f"/api/reports/{report_id}"}
+            except (ValueError, TypeError, AttributeError, OSError):
+                pass
         react_trace.append({"type": "tool_call", "tool": tc.name, "result_preview": preview})
         self._emit(
             "tool_result",
@@ -3244,6 +2641,7 @@ class AgentLoop:
                 "elapsed_ms": elapsed_ms,
                 "preview": preview,
                 "call_id": tc.id,
+                **({"artifact": artifact} if artifact else {}),
             },
         )
 
@@ -3301,13 +2699,27 @@ class AgentLoop:
                 logger.warning("Auto compact: nothing to compress (body too small)")
                 return
 
+        # Replayed results are owed one successful writing request. Keep the
+        # entire assistant-call/result pair out of summaries until then.
+        pending = self._readonly_replay_visibility_pending
+        leased = [msg for msg in head if (
+            msg.get("role") == "tool" and msg.get("tool_call_id") in pending
+        ) or any(call.get("id") in pending for call in msg.get("tool_calls") or [])]
+        if leased:
+            head = [msg for msg in head if all(msg is not kept for kept in leased)]
+            tail = leased + tail
+
         # Build focus section
         focus_section = _FOCUS_SECTION.format(topic=focus_topic) if focus_topic else ""
 
         # Fold every head chunk so no message falls between the summary prompt
         # and the preserved tail. The first fresh chunk gets the full
         # structured handoff; subsequent chunks incrementally update it.
-        chunks = _summary_chunks(head)
+        # Encrypted provider items are opaque to the summariser and only
+        # cost tokens there; the messages they belong to are being folded.
+        chunks = _summary_chunks(
+            [{k: v for k, v in m.items() if k != "provider_items"} for m in head]
+        )
         logger.info("Auto compact: folding %d summary chunks", len(chunks))
         summary = self._previous_summary or ""
         degraded_compact = False
@@ -3442,7 +2854,6 @@ class AgentLoop:
 
 
 _LEGACY_LAZY = {
-    "TOKEN_THRESHOLD": _token_threshold,
     "MICROCOMPACT_THRESHOLD": lambda: int(_token_threshold() * 0.5),
     "COLLAPSE_THRESHOLD": lambda: int(_token_threshold() * 0.7),
     "HEARTBEAT_INTERVAL_S": _heartbeat_interval_s,

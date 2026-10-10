@@ -1,8 +1,9 @@
 """Tests for channel config field metadata and fail-safe secret masking.
 
-Covers the uiHints registry (hand-written for DingTalk and QQ, derived
-elsewhere) and the security acceptance criterion: no key matching
-:data:`SECRET_KEY_RE` ever survives in the non-secret ``values`` half.
+Covers the uiHints registry (hand-written for DingTalk, Discord, Email,
+Feishu, QQ, Slack and WebSocket, derived elsewhere) and the security
+acceptance criterion: no key matching :data:`SECRET_KEY_RE` ever survives in
+the non-secret ``values`` half.
 """
 
 from __future__ import annotations
@@ -176,6 +177,105 @@ def test_qq_field_hints_exact_snapshot() -> None:
     assert "enabled" not in {hint["key"] for hint in hints}
 
 
+def test_feishu_field_hints_exact_snapshot() -> None:
+    """Feishu hints match the frozen contract, with ``enabled`` excluded."""
+    hints = channel_field_hints("feishu")
+    assert hints == [
+        {
+            "key": "app_id",
+            "type": "text",
+            "secret": False,
+            "required": True,
+            "help_key": "settings.channels.fields.feishu.app_id",
+        },
+        {
+            "key": "app_secret",
+            "type": "password",
+            "secret": True,
+            "required": True,
+            "help_key": "settings.channels.fields.feishu.app_secret",
+        },
+        {
+            "key": "encrypt_key",
+            "type": "password",
+            "secret": True,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.encrypt_key",
+        },
+        {
+            "key": "verification_token",
+            "type": "password",
+            "secret": True,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.verification_token",
+        },
+        {
+            "key": "allow_from",
+            "type": "list",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.allow_from",
+        },
+        {
+            "key": "react_emoji",
+            "type": "text",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.react_emoji",
+        },
+        {
+            "key": "done_emoji",
+            "type": "text",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.done_emoji",
+        },
+        {
+            "key": "tool_hint_prefix",
+            "type": "text",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.tool_hint_prefix",
+        },
+        {
+            "key": "group_policy",
+            "type": "text",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.group_policy",
+        },
+        {
+            "key": "reply_to_message",
+            "type": "bool",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.reply_to_message",
+        },
+        {
+            "key": "streaming",
+            "type": "bool",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.streaming",
+        },
+        {
+            "key": "domain",
+            "type": "text",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.domain",
+        },
+        {
+            "key": "topic_isolation",
+            "type": "bool",
+            "secret": False,
+            "required": False,
+            "help_key": "settings.channels.fields.feishu.topic_isolation",
+        },
+    ]
+    assert "enabled" not in {hint["key"] for hint in hints}
+
+
 # --- (a2) hand-written Email / WebSocket hints ------------------------------- #
 
 _EMAIL_HINT_KEYS = (
@@ -191,6 +291,7 @@ _EMAIL_HINT_KEYS = (
     "smtp_port",
     "smtp_username",
     "smtp_password",
+    "pdf_password",
     "smtp_use_tls",
     "smtp_use_ssl",
     "verify_tls",
@@ -207,6 +308,7 @@ _EMAIL_HINT_KEYS = (
     "allow_from",
     "verify_dkim",
     "verify_spf",
+    "trusted_authserv_id",
     "allowed_attachment_types",
     "max_attachment_size",
     "max_attachments_per_email",
@@ -238,15 +340,17 @@ def test_email_field_hints_contract() -> None:
     keys = tuple(hint["key"] for hint in hints)
     assert keys == _EMAIL_HINT_KEYS
     assert "enabled" not in keys
-    assert len(hints) == 31
+    assert len(hints) == 33
 
     by_key = {hint["key"]: hint for hint in hints}
     assert {key for key, hint in by_key.items() if hint["secret"]} == {
         "imap_password",
         "smtp_password",
+        "pdf_password",
     }
     assert by_key["imap_password"]["type"] == "password"
     assert by_key["smtp_password"]["type"] == "password"
+    assert by_key["pdf_password"]["type"] == "password"
     # required mirrors EmailChannel._validate_config: the channel refuses to
     # start without all six credential fields.
     assert {key for key, hint in by_key.items() if hint["required"]} == {
@@ -259,6 +363,14 @@ def test_email_field_hints_contract() -> None:
     }
     for hint in hints:
         assert hint["help_key"] == f"settings.channels.fields.email.{hint['key']}"
+
+
+def test_email_pdf_password_config_metadata_exposes_presence_only() -> None:
+    value = "private-pdf-password-1234"
+    values, secrets = split_values_secrets("email", {"pdf_password": value})
+    assert values == {}
+    assert secrets["pdf_password"] == {"set": True, "masked": "****"}
+    assert value not in repr((values, secrets))
 
 
 def test_websocket_field_hints_contract() -> None:
@@ -284,6 +396,252 @@ def test_websocket_field_hints_contract() -> None:
     assert {key for key, hint in by_key.items() if hint["required"]} == set()
     for hint in hints:
         assert hint["help_key"] == f"settings.channels.fields.websocket.{hint['key']}"
+
+
+# --- (a2b) hand-written Slack hints ------------------------------------------ #
+
+_SLACK_HINT_KEYS = (
+    "bot_token",
+    "app_token",
+    "user_token_read_only",
+    "reply_in_thread",
+    "react_emoji",
+    "done_emoji",
+    "include_thread_context",
+    "thread_context_limit",
+    "allow_from",
+    "group_policy",
+    "group_allow_from",
+    "group_require_mention",
+)
+
+
+def test_slack_field_hints_contract() -> None:
+    """Slack hints: declaration order, secrets, required set, help_key prefix."""
+    hints = channel_field_hints("slack")
+    keys = tuple(hint["key"] for hint in hints)
+    assert keys == _SLACK_HINT_KEYS
+    assert "enabled" not in keys
+    assert len(hints) == 12
+
+    by_key = {hint["key"]: hint for hint in hints}
+    assert {key for key, hint in by_key.items() if hint["secret"]} == {
+        "bot_token",
+        "app_token",
+    }
+    assert by_key["bot_token"]["type"] == "password"
+    assert by_key["app_token"]["type"] == "password"
+    # required mirrors SlackChannel.start(): it logs "bot/app token not
+    # configured" and returns without connecting when either is missing.
+    assert {key for key, hint in by_key.items() if hint["required"]} == {
+        "bot_token",
+        "app_token",
+    }
+    for hint in hints:
+        assert hint["help_key"] == f"settings.channels.fields.slack.{hint['key']}"
+
+
+def test_slack_transport_knobs_stay_file_configured() -> None:
+    """``mode``/``webhook_path`` are excluded: socket is the only transport."""
+    keys = {hint["key"] for hint in channel_field_hints("slack")}
+    assert "mode" not in keys
+    assert "webhook_path" not in keys
+    assert "dm" not in keys
+
+
+def test_slack_group_policy_choices_pin() -> None:
+    """group_policy carries the enum the adapter branches on; nothing else does.
+
+    Drift pin for the choices contract: the literals mirror
+    ``SlackChannel._should_respond_in_channel`` ("open"/"mention"/"allowlist")
+    and ``_is_allowed`` ("allowlist") in slack.py. Route-side enum enforcement
+    is deferred to a later PR.
+    """
+    by_key = {hint["key"]: hint for hint in channel_field_hints("slack")}
+    choices = by_key["group_policy"].get("choices")
+    assert choices == ["open", "mention", "allowlist"]
+    assert all(isinstance(choice, str) for choice in choices)
+
+    source = (_REPO_ROOT / "agent/src/channels/slack.py").read_text(encoding="utf-8")
+    for choice in choices:
+        assert f'group_policy == "{choice}"' in source, choice
+
+    # Additive contract: choices is absent for every other hinted field, in
+    # slack, discord and all pre-existing hint tables.
+    for name, hints in _config_meta.FIELD_HINTS.items():
+        for hint in hints:
+            if (name, hint["key"]) not in {
+                ("slack", "group_policy"),
+                ("discord", "group_policy"),
+            }:
+                assert "choices" not in hint, f"{name}.{hint['key']}"
+
+
+def test_slack_hint_keys_exist_in_default_config() -> None:
+    """Every slack hint key is a real SlackConfig field (authoring contract)."""
+    config = _section_for("slack")
+    if config is None:
+        pytest.skip("slack adapter is not loadable in this environment")
+    for hint in channel_field_hints("slack"):
+        assert hint["key"] in config
+
+
+def test_slack_user_token_read_only_is_not_a_secret() -> None:
+    """The audited subtraction: a behavior bool the regex over-matches."""
+    assert SECRET_KEY_RE.search("user_token_read_only")
+    assert is_secret_key("slack", "user_token_read_only") is False
+    assert is_secret_key("slack", "bot_token") is True
+    assert is_secret_key("slack", "app_token") is True
+
+    values, secrets = split_values_secrets(
+        "slack", {"user_token_read_only": True, "bot_token": "xoxb-dummy-1234"}
+    )
+    assert values == {"user_token_read_only": True}
+    assert set(secrets) == {"bot_token"}
+
+
+def test_slack_split_keeps_dm_dict_and_behavior_values_untouched() -> None:
+    """Regression: F5 unmasks user_token_read_only but must NOT flatten ``dm``.
+
+    The raw ``dm`` dict still travels in ``values`` unchanged (nested ``dm.*``
+    graphical editing is a later feature); credentials mask; every behavior
+    field stays visible.
+    """
+    section = {
+        "enabled": True,
+        "mode": "socket",
+        "webhook_path": "/slack/events",
+        "bot_token": "xoxb-dummy-secret-1234",
+        "app_token": "xapp-dummy-secret-5678",
+        "user_token_read_only": True,
+        "reply_in_thread": True,
+        "react_emoji": "eyes",
+        "done_emoji": "white_check_mark",
+        "include_thread_context": True,
+        "thread_context_limit": 20,
+        "allow_from": ["U123"],
+        "group_policy": "mention",
+        "group_allow_from": [],
+        "group_require_mention": False,
+        "dm": {"enabled": True, "policy": "open", "allow_from": []},
+    }
+
+    values, secrets = split_values_secrets("slack", section)
+
+    assert set(secrets) == {"bot_token", "app_token"}
+    assert secrets["bot_token"] == {"set": True, "masked": "****1234"}
+    assert secrets["app_token"] == {"set": True, "masked": "****5678"}
+    assert values["user_token_read_only"] is True
+    assert values["dm"] == {"enabled": True, "policy": "open", "allow_from": []}
+    assert values["group_policy"] == "mention"
+    assert values["allow_from"] == ["U123"]
+    assert set(values) == set(section) - {"bot_token", "app_token"}
+
+
+# --- (a2c) hand-written Discord hints ---------------------------------------- #
+
+_DISCORD_HINT_KEYS = (
+    "token",
+    "allow_from",
+    "allow_channels",
+    "intents",
+    "group_policy",
+    "read_receipt_emoji",
+    "working_emoji",
+    "working_emoji_delay",
+    "streaming",
+    "proxy",
+    "proxy_username",
+    "proxy_password",
+)
+
+
+def test_discord_field_hints_contract() -> None:
+    """Discord hints: declaration order, secrets, required set, help_key prefix."""
+    hints = channel_field_hints("discord")
+    keys = tuple(hint["key"] for hint in hints)
+    assert keys == _DISCORD_HINT_KEYS
+    assert "enabled" not in keys
+    assert len(hints) == 12
+
+    by_key = {hint["key"]: hint for hint in hints}
+    assert {key for key, hint in by_key.items() if hint["secret"]} == {
+        "token",
+        "proxy_username",
+        "proxy_password",
+    }
+    assert by_key["token"]["type"] == "password"
+    assert by_key["proxy_username"]["type"] == "password"
+    assert by_key["proxy_password"]["type"] == "password"
+    # required mirrors DiscordChannel.start(): it logs "bot token not
+    # configured" and returns without connecting when the token is empty.
+    assert {key for key, hint in by_key.items() if hint["required"]} == {"token"}
+    for hint in hints:
+        assert hint["help_key"] == f"settings.channels.fields.discord.{hint['key']}"
+
+
+def test_discord_group_policy_choices_pin() -> None:
+    """group_policy carries the enum the adapter declares.
+
+    Drift pin for the choices contract: the literals mirror the
+    ``group_policy: Literal["mention", "open"]`` declaration on DiscordConfig
+    and the strings ``DiscordChannel._should_respond_in_group`` branches on in
+    discord.py. Route-side enum enforcement is deferred to a later PR.
+    """
+    by_key = {hint["key"]: hint for hint in channel_field_hints("discord")}
+    choices = by_key["group_policy"].get("choices")
+    assert choices == ["mention", "open"]
+    assert all(isinstance(choice, str) for choice in choices)
+
+    source = (_REPO_ROOT / "agent/src/channels/discord.py").read_text(encoding="utf-8")
+    for choice in choices:
+        assert f'group_policy == "{choice}"' in source, choice
+
+
+def test_discord_hint_keys_exist_in_default_config() -> None:
+    """Every discord hint key is a real DiscordConfig field (authoring contract)."""
+    config = _section_for("discord")
+    if config is None:
+        pytest.skip("discord adapter is not loadable in this environment")
+    for hint in channel_field_hints("discord"):
+        assert hint["key"] in config
+
+
+def test_discord_secrets_are_masked_and_behavior_values_stay_visible() -> None:
+    """All three Discord credential fields mask; behavior fields stay in values.
+
+    Discord carries no audited ``secret=False`` subtraction: every
+    secret-shaped key (``token``, ``proxy_username``, ``proxy_password``) is a
+    true credential, so the hand-written flags agree with SECRET_KEY_RE and
+    ``_AUDITED_NON_SECRETS`` stays untouched.
+    """
+    section = {
+        "enabled": True,
+        "token": "dummy-token-1234",
+        "allow_from": ["123456789"],
+        "allow_channels": [],
+        "intents": 37377,
+        "group_policy": "mention",
+        "read_receipt_emoji": "👀",
+        "working_emoji": "🔧",
+        "working_emoji_delay": 2.0,
+        "streaming": True,
+        "proxy": "http://proxy.local:8080",
+        "proxy_username": "proxy-user-4321",
+        "proxy_password": "proxy-pass-5678",
+    }
+
+    values, secrets = split_values_secrets("discord", section)
+
+    assert set(secrets) == {"token", "proxy_username", "proxy_password"}
+    assert secrets["token"] == {"set": True, "masked": "****1234"}
+    assert secrets["proxy_username"] == {"set": True, "masked": "****4321"}
+    assert secrets["proxy_password"] == {"set": True, "masked": "****5678"}
+    assert values["intents"] == 37377
+    assert values["group_policy"] == "mention"
+    assert values["proxy"] == "http://proxy.local:8080"
+    assert values["allow_from"] == ["123456789"]
+    assert set(values) == set(section) - {"token", "proxy_username", "proxy_password"}
 
 
 # --- (a3) hint-authoritative secret resolution ------------------------------- #
@@ -358,7 +716,7 @@ def test_derived_channel_regex_masking_unchanged() -> None:
 # --- (b) fallback derivation ------------------------------------------------- #
 
 
-@pytest.mark.parametrize("name", ["discord", "telegram"])
+@pytest.mark.parametrize("name", ["telegram"])
 def test_fallback_derives_types_and_secret_flags(name: str) -> None:
     """Adapters without hand-written hints derive metadata from default_config()."""
     config = _section_for(name)
@@ -507,6 +865,10 @@ def test_proxy_url_userinfo_is_stripped_from_values() -> None:
             "webhook_url": "https://example.com/hook",
             "note": "plain text",
             "bad_proxy": "http://user:pw@host:notaport",
+            "far_port": "https://user:pw@host:99999/hook",
+            "space_url": "http://admin:pass word@proxy:8080",
+            "tab_url": "http://us\ter:pw@host/",
+            "space_user_url": "https://user:pw @host:8080",
             "token": "abc",
         },
     )
@@ -515,7 +877,17 @@ def test_proxy_url_userinfo_is_stripped_from_values() -> None:
     assert "pw" not in values["proxy"]
     assert values["webhook_url"] == "https://example.com/hook"
     assert values["note"] == "plain text"
-    assert values["bad_proxy"] == "http://user:pw@host:notaport"
+    # A malformed port must not exempt the URL from redaction.
+    assert values["bad_proxy"] == "http://host:notaport"
+    # Nor may an out-of-range port (a plausible typo).
+    assert values["far_port"] == "https://host:99999/hook"
+    # Whitespace inside the authority must not exempt the URL from redaction.
+    assert values["space_url"] == "http://proxy:8080"
+    assert "pass word" not in values["space_url"]
+    assert values["tab_url"] == "http://host/"
+    assert "pw" not in values["tab_url"]
+    assert values["space_user_url"] == "https://host:8080"
+    assert "user:pw" not in values["space_user_url"]
     assert secrets["token"] == {"set": True, "masked": "****"}
 
 
@@ -526,6 +898,29 @@ def test_hint_marked_secret_is_masked_for_known_channel() -> None:
     )
     assert values == {}
     assert secrets == {"client_secret": {"set": True, "masked": "****1234"}}
+
+
+def test_feishu_secrets_are_masked_and_behavior_values_stay_visible() -> None:
+    """All three Feishu credential fields mask; behavior fields stay in values."""
+    section = {
+        "enabled": True,
+        "app_id": "cli_app_id_123",
+        "app_secret": "dummy-secret-1234",
+        "encrypt_key": "dummy-encrypt-5678",
+        "verification_token": "dummy-verify-9012",
+        "react_emoji": "THUMBSUP",
+        "domain": "lark",
+        "group_policy": "open",
+    }
+    values, secrets = split_values_secrets("feishu", section)
+    assert set(secrets) == {"app_secret", "encrypt_key", "verification_token"}
+    assert secrets["app_secret"] == {"set": True, "masked": "****1234"}
+    assert secrets["encrypt_key"] == {"set": True, "masked": "****5678"}
+    assert secrets["verification_token"] == {"set": True, "masked": "****9012"}
+    assert values["react_emoji"] == "THUMBSUP"
+    assert values["domain"] == "lark"
+    assert values["group_policy"] == "open"
+    assert values["app_id"] == "cli_app_id_123"
 
 
 def test_secret_key_regex_is_case_insensitive() -> None:
@@ -561,7 +956,10 @@ _EXPECTED_SECRET_KEYS: dict[str, set[str]] = {
     "napcat": {"access_token"},
     "qq": {"secret"},
     "signal": set(),
-    "slack": {"bot_token", "app_token", "user_token_read_only"},
+    # user_token_read_only is NOT here: the hand-written slack hint carries an
+    # audited secret=False subtraction (a behavior bool the regex over-matches),
+    # listed in _AUDITED_NON_SECRETS below.
+    "slack": {"bot_token", "app_token"},
     "telegram": {"token", "webhook_secret_token"},
     "wecom": {"secret"},
     "weixin": {"token"},
@@ -646,6 +1044,7 @@ _AUDITED_NON_SECRETS = {
     ("websocket", "token_issue_path"),  # a URL path
     ("websocket", "token_ttl_s"),  # an integer lifetime
     ("websocket", "websocket_requires_token"),  # a boolean switch
+    ("slack", "user_token_read_only"),  # a boolean switch
 }
 
 

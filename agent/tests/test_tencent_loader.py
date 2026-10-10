@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from backtest.loaders import tencent_loader
+from tests.loader_contract import assert_loader_contract
 
 
 class _FakeResponse:
@@ -100,6 +101,7 @@ def test_hk_equity_maps_to_hk_prefix_and_parses(monkeypatch) -> None:
     assert len(urls) == 1
     assert "param=hk00700,day," in urls[0]
     df = result["00700.HK"]
+    assert_loader_contract(df, context="tencent hk daily")
     assert len(df) == 2
     # Tencent kline rows are [date, open, close, high, low, volume].
     assert df.iloc[0]["open"] == 466.4
@@ -149,7 +151,7 @@ def _last500_api(history: pd.DataFrame, requested_ends: list[str] | None = None)
     opposite first-500 assumption, which is why tail truncation passed CI.
     """
 
-    def fake_page(code, start, end):  # noqa: ANN001
+    def fake_page(code, start, end, forward_adjusted=True):  # noqa: ANN001
         if requested_ends is not None:
             requested_ends.append(end)
         window = history.loc[
@@ -207,7 +209,7 @@ def test_overlapping_pages_are_deduplicated(monkeypatch) -> None:
     history = _history("2020-01-01", tencent_loader._PAGE_SIZE)
     calls = {"n": 0}
 
-    def fake_page(code, start, end):  # noqa: ANN001
+    def fake_page(code, start, end, forward_adjusted=True):  # noqa: ANN001
         calls["n"] += 1
         if calls["n"] == 1:
             return history.iloc[-tencent_loader._PAGE_SIZE:]
@@ -240,7 +242,7 @@ def test_a_failed_page_raises_instead_of_returning_partial_history(
     calls = {"n": 0}
     sleeps: list[float] = []
 
-    def fake_page(code, start, end):  # noqa: ANN001
+    def fake_page(code, start, end, forward_adjusted=True):  # noqa: ANN001
         calls["n"] += 1
         if calls["n"] == 1:
             return history.iloc[-tencent_loader._PAGE_SIZE:]
@@ -304,7 +306,7 @@ def test_midwalk_empty_page_is_rerequested_before_truncating(monkeypatch) -> Non
     sleeps: list[float] = []
     monkeypatch.setattr(tencent_loader.time, "sleep", sleeps.append)
 
-    def fake_page(code, start, end):  # noqa: ANN001
+    def fake_page(code, start, end, forward_adjusted=True):  # noqa: ANN001
         calls["n"] += 1
         if calls["n"] == 1:
             return history.iloc[-tencent_loader._PAGE_SIZE:]
@@ -329,7 +331,7 @@ def test_midwalk_empty_page_that_persists_ends_the_walk(monkeypatch) -> None:
     sleeps: list[float] = []
     monkeypatch.setattr(tencent_loader.time, "sleep", sleeps.append)
 
-    def fake_page(code, start, end):  # noqa: ANN001
+    def fake_page(code, start, end, forward_adjusted=True):  # noqa: ANN001
         calls["n"] += 1
         if calls["n"] == 1:
             return history.iloc[-tencent_loader._PAGE_SIZE:]

@@ -13,9 +13,9 @@ returned, logged, or cached.
 
 Adding another token-endpoint channel (checklist):
 
-1. ``<name>_probe.py``: endpoint URL, payload shape, ``token_key``; import
-   the adapter's config type under ``TYPE_CHECKING`` only, so a credential
-   check never pulls the channel's SDK.
+1. ``<name>_probe.py``: endpoint URL, HTTP method, payload shape,
+   ``token_key``; import the adapter's config type under ``TYPE_CHECKING``
+   only, so a credential check never pulls the channel's SDK.
 2. ``registry._INTERNAL``: add ``"<name>_probe"`` so channel discovery keeps
    treating the module as internal rather than as an adapter.
 3. Adapter: ``supports_connection_test = True`` plus a thin
@@ -74,6 +74,9 @@ async def probe_token_endpoint(
     token_key: str,
     secrets: Sequence[str],
     sdk_available: bool,
+    required_fields: Sequence[str] = (),
+    headers: dict[str, str] | None = None,
+    method: str = "POST",
     transport: httpx.AsyncHTTPTransport | None = None,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
@@ -84,12 +87,19 @@ async def probe_token_endpoint(
     A successful token is discarded: it is never returned, logged, or cached.
 
     Args:
-        url: The token endpoint to POST to.
-        payload: JSON body carrying the credentials.
+        url: The token endpoint to request.
+        payload: JSON body carrying the credentials; not sent on ``"GET"``.
         token_key: Response field whose truthy value means success.
         secrets: Credential values to scrub from every ``detail``.
         sdk_available: Whether the channel's optional SDK imported; echoed
             back so the caller's envelope carries it unchanged.
+        required_fields: Additional truthy response fields required for
+            success, such as Slack's bot identity when checking a bot token.
+        headers: Optional request headers for endpoints that authenticate
+            outside the JSON body (e.g. Slack's ``Authorization: Bearer``).
+        method: HTTP method for the request. ``"GET"`` sends no JSON body,
+            for endpoints that authenticate purely through ``headers``
+            (e.g. Discord's ``users/@me``).
         transport: Optional custom transport (e.g. an IPv4-bound one).
         timeout: Per-phase timeout in seconds for the fresh client.
 
@@ -103,7 +113,12 @@ async def probe_token_endpoint(
             timeout=httpx.Timeout(timeout, connect=timeout),
             transport=transport,
         ) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.request(
+                method,
+                url,
+                json=payload if method != "GET" else None,
+                headers=headers,
+            )
     except httpx.HTTPError as exc:
         return {
             "ok": False,
@@ -121,7 +136,7 @@ async def probe_token_endpoint(
         # middlebox) must classify, never raise: .get on a non-dict would
         # surface as a bare 500 on the unguarded /test route.
         token = body.get(token_key) if isinstance(body, dict) else None
-        if not token:
+        if not token or any(not body.get(key) for key in required_fields):
             return {
                 "ok": False,
                 "code": "invalid_credentials",
@@ -130,7 +145,9 @@ async def probe_token_endpoint(
             }
         return {"ok": True, "code": "ok", "sdk_available": sdk_available}
 
-    if 400 <= resp.status_code < 500:
+    # A timed-out or rate-limited request says nothing about the credentials.
+    # Keep enable verification fail-closed while reporting a retryable failure.
+    if 400 <= resp.status_code < 500 and resp.status_code not in (408, 429):
         return {
             "ok": False,
             "code": "invalid_credentials",

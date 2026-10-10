@@ -13,6 +13,7 @@ from slack_sdk.socket_mode.websockets import SocketModeClient
 from slack_sdk.web.async_client import AsyncWebClient
 from slackify_markdown import slackify_markdown
 
+from src.channels import slack_probe
 from src.channels.bus.events import OutboundMessage
 from src.channels.bus.queue import MessageBus
 from src.channels.base import BaseChannel
@@ -73,6 +74,11 @@ class SlackChannel(BaseChannel):
 
     name = "slack"
     display_name = "Slack"
+    supports_connection_test = True
+    delivery_target_label = "Slack destination"
+    delivery_target_kind = "slack_destination"
+    delivery_target_placeholder = "#channel, @user, or conversation ID"
+    hot_reload_noop_keys = frozenset({"allow_from", "react_emoji", "done_emoji"})
     _SLACK_ID_RE = re.compile(r"^[CDGUW][A-Z0-9]{2,}$")
     _SLACK_CHANNEL_REF_RE = re.compile(r"^<#([A-Z0-9]+)(?:\|[^>]+)?>$")
     _SLACK_USER_REF_RE = re.compile(r"^<@([A-Z0-9]+)(?:\|[^>]+)?>$")
@@ -152,6 +158,18 @@ class SlackChannel(BaseChannel):
             except Exception as e:
                 self.logger.warning("socket close failed: %s", e)
             self._socket_client = None
+
+    async def test_connection(self) -> dict[str, Any]:
+        """Validate the Slack credentials with a standalone two-leg probe.
+
+        Delegates to :func:`src.channels.slack_probe.test_connection`; see
+        that function for the full contract. ``sdk_available=True`` is a
+        constant because this module imports ``slack_sdk`` unconditionally
+        at the top (no availability guard, unlike feishu): a missing SDK
+        means this class never imports at all and the registry already
+        reports ``available: false`` with the pip install hint.
+        """
+        return await slack_probe.test_connection(self.config, sdk_available=True)
 
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Slack."""

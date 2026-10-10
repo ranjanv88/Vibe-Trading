@@ -36,10 +36,7 @@ _REAL_ASYNC_CLIENT = httpx.AsyncClient
 # Modules whose optional SDK is absent are skipped at runtime rather than
 # removed from the parametrization, so coverage grows wherever deps are installed.
 _DEFAULT_CHANNEL_CANDIDATES: list[tuple[str, str]] = [
-    ("src.channels.discord", "DiscordChannel"),
     ("src.channels.telegram", "TelegramChannel"),
-    ("src.channels.slack", "SlackChannel"),
-    ("src.channels.feishu", "FeishuChannel"),
     ("src.channels.wecom", "WecomChannel"),
 ]
 

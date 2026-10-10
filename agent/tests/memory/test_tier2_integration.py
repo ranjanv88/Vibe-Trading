@@ -193,6 +193,64 @@ class TestFtsAddThenSearchFinds:
         assert len(results) >= 1
         assert any("quant" in e.title.lower() for e in results)
 
+    def test_fts_stale_rows_do_not_displace_current_memories(self, tmp_path, monkeypatch, fts_db):
+        """Discarding a stale FTS row must not shrink the requested result set."""
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "false")
+        reset_env_config()
+
+        mem = PersistentMemory(tmp_path)
+        mem.add("first recall", "evidence retrieval", "project")
+        mem.add("second recall", "evidence retrieval", "project")
+        entries = {entry.title: entry for entry in mem.list_entries()}
+
+        from src.memory.search_index import MemoryMatch
+        import src.memory.search_index as search_index
+
+        class _Index:
+            def search(self, query, max_results):
+                candidates = [
+                    MemoryMatch("stale0", "removed memory", "", -10.0),
+                    MemoryMatch(entries["first recall"].id, "first recall", "", -9.0),
+                    MemoryMatch(entries["second recall"].id, "second recall", "", -8.0),
+                ]
+                return candidates[:max_results]
+
+        monkeypatch.setattr(search_index, "get_shared_index", lambda: _Index())
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "true")
+        reset_env_config()
+
+        results = mem.find_relevant("evidence retrieval", max_results=2)
+
+        assert [entry.title for entry in results] == ["first recall", "second recall"]
+
+    @pytest.mark.parametrize("requested", [2, 3])
+    def test_real_fts_finds_current_rows_beyond_a_fixed_buffer(
+        self, tmp_path, monkeypatch, fts_db, requested
+    ):
+        """Expand past stale rows and stop when the real SQLite index ends."""
+        from src.memory.search_index import get_shared_index
+
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "false")
+        reset_env_config()
+        mem = PersistentMemory(tmp_path / "memories")
+        mem.add("first recall", "evidence retrieval", "project")
+        mem.add("second recall", "evidence retrieval", "project")
+        entries = {entry.title: entry for entry in mem.list_entries()}
+        first, second = entries["first recall"], entries["second recall"]
+
+        index = get_shared_index()
+        for entry_id in [first.id, *(f"stale{i}" for i in range(12)), second.id]:
+            index.index_entry(entry_id, "recall", "", "", "evidence retrieval")
+        ranked = index.search("evidence retrieval", max_results=100)
+        assert [match.entry_id for match in ranked] == [
+            first.id, *(f"stale{i}" for i in range(12)), second.id
+        ]
+
+        monkeypatch.setenv("VT_MEMORY_FTS_INDEX", "true")
+        reset_env_config()
+        results = mem.find_relevant("evidence retrieval", max_results=requested)
+        assert [entry.id for entry in results] == [first.id, second.id]
+
 
 # ---------------------------------------------------------------------------
 # 4a. Fallback token-scan must find the same short-token content the FTS5

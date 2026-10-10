@@ -1,18 +1,50 @@
 {
   "app": {
-    "version": "v0.1.15"
+    "version": "v0.1.16"
+  },
+  "navigation": {
+    "menu": "機能を見る",
+    "close": "機能メニューを閉じる",
+    "groups": {
+      "research": "日々のリサーチ",
+      "analysis": "専門分析",
+      "automation": "自動化と設定"
+    },
+    "howTo": "{{feature}}の使い方",
+    "startResearch": "リサーチアシスタントから始める",
+    "descriptions": {
+      "agent": "調べたいことや検証したい戦略を自分の言葉で伝えます。",
+      "reports": "完了したバックテストを確認・比較します。",
+      "portfolio": "接続した口座の残高と保有資産をまとめて確認します。",
+      "alphaZoo": "銘柄選択のシグナルを調べ、過去の成績を評価・比較します。",
+      "optionsLab": "オプション戦略を組み立て、損益とリスクや米国のオプションチェーンを確認します。",
+      "correlation": "複数の資産の値動きの関係を比較します。",
+      "scheduled": "リサーチを指定した周期で繰り返します。",
+      "runtime": "ブローカーの接続と取引の稼働状況を確認します。",
+      "settings": "モデル、データソース、ブローカー接続を設定します。"
+    },
+    "instructions": {
+      "reports": "まずアシスタントに戦略のバックテストを依頼し、ここで結果を開きます。会話で作成した PDF などは元の会話からダウンロードします。",
+      "portfolio": "口座ソースを追加して有効にし、保有資産を更新します。このページは口座情報の読み取り専用の概要です。",
+      "alphaZoo": "因子の定義を読み、市場と期間を選んで評価・比較します。候補のシグナルはバックテストで検証してください。",
+      "optionsLab": "プリセットを選ぶかレッグを追加し、価格、満期、変動率を調整すると結果が自動更新されます。実際のチェーンの銘柄とシミュレーションの入力は別々に設定します。",
+      "correlation": "資産コードを2つ以上入力し、対象期間を選んで計算します。",
+      "scheduled": "リサーチ指示と周期を入力して保存します。実行にはローカルのスケジューラーを有効にする必要があり、配信にはチャネル設定も必要です。",
+      "runtime": "先に設定または保有資産ページでブローカーを接続します。利用できる取引操作はブローカーの機能とあなたの許可に依存します。",
+      "settings": "まずモデルを設定します。必要に応じてデータソースやブローカー接続を追加します。公開市場のリサーチにはブローカー口座は不要です。"
+    }
   },
   "layout": {
     "home": "ホーム",
-    "agent": "エージェント",
-    "runtime": "取引モニター",
-    "scheduled": "スケジュール",
-    "reports": "レポート",
-    "portfolio": "ポートフォリオ",
-    "alphaZoo": "アルファ・ライブラリ",
+    "agent": "リサーチアシスタント",
+    "runtime": "取引の状態",
+    "scheduled": "定期リサーチ",
+    "reports": "バックテスト結果",
+    "portfolio": "口座の保有資産",
+    "alphaZoo": "因子リサーチ",
     "settings": "設定",
-    "correlation": "相関行列",
-    "optionsLab": "オプションラボ",
+    "correlation": "資産の相関",
+    "optionsLab": "オプション分析",
     "sessions": "セッション",
     "newChat": "新規チャット",
     "noSessions": "チャットはまだありません。＋を押して始めましょう",
@@ -28,7 +60,8 @@
     "skipToMain": "メインコンテンツへスキップ",
     "sidebar": "Vibe-Trading サイドバー",
     "mainNavigation": "メインナビゲーション",
-    "about": "概要"
+    "about": "概要",
+    "sessionsLoadFailed": "会話を読み込めません。"
   },
   "runtime": {
     "monitorBadge": "取引モニター",
@@ -143,6 +176,23 @@
     "advancedHint": "選択したタイムゾーンで評価される 5 フィールドの cron 式（分 時 日 月 曜日；リストと範囲に対応）、またはミリ秒単位の間隔。",
     "timezoneLabel": "タイムゾーン",
     "create": "スケジュールを作成",
+    "saveChanges": "変更を保存",
+    "cancelEdit": "編集をキャンセル",
+    "editingHint": "このスケジュール実行を編集中です。保存しても識別子と実行履歴は保持されます。",
+    "edit": "編集",
+    "editAria": "スケジュール実行を編集: {{prompt}}",
+    "editRunningDisabled": "実行または配信が完了してから編集してください。",
+    "deliveryInApp": "Vibe内のみに保持（送信しない）",
+    "deliveryNoChannels": "有効な配信チャネルが設定されていません。設定 → チャネルで設定してください。",
+    "deliveryChannelsLoadFailed": "設定済みの配信チャネルを読み込めませんでした。",
+    "deliveryChannelUnavailable": "{{channel}}（現在利用できません）",
+    "deliveryTargetKind_destination": "送信先",
+    "deliveryTargetKind_email_address": "受信者のメールアドレス",
+    "deliveryTargetKind_chat": "チャット",
+    "deliveryTargetKind_channel": "チャネル",
+    "deliveryTargetDisabled": "先に配信チャネルを選択してください。",
+    "deliverySummary": "{{channel}} → {{target}}",
+    "deliveryUnknownTarget": "設定済みの送信先",
     "promptRequired": "スケジュール作成の前にリサーチプロンプトを入力してください。",
     "invalidTime": "有効な時刻を HH:MM 形式で入力してください。",
     "executorHint": "サーバーで VIBE_TRADING_ENABLE_SCHEDULER が有効な場合のみ実行されます。",
@@ -185,6 +235,16 @@
     "deliveryChannelPlaceholder": "telegram、feishu など（空欄ならアプリ内のみ）",
     "deliveryTargetLabel": "チャンネル送信先",
     "deliveryTargetPlaceholder": "チャット / グループ / ユーザー ID",
+    "deliveryFormatLabel": "Email report format",
+    "deliveryFormatDefault": "Channel default (plain text)",
+    "deliveryFormatHtml": "HTML email",
+    "deliveryFormatPdf": "PDF attachment",
+    "proposalPdfProtection": "PDFのパスワード保護",
+    "proposalPdfProtectionOn": "有効",
+    "proposalPdfProtectionOff": "無効",
+    "deliveryFormatDefaultHint": "Keeps the existing plain-text delivery behavior.",
+    "deliveryFormatHtmlHint": "Shows the full report as sanitized HTML in the email body.",
+    "deliveryFormatPdfHint": "Attaches the full report as PDF and keeps only a short notice in the body.",
     "deliveryHint": "既定はオフです。ブリーフィングは実行の**完了後**に配信され、スケジュール時ではありません。",
     "deliveryTargetRequired": "そのチャンネルの送信先を指定するか、チャンネルを空にしてください。",
     "delivery_none": "次回の実行完了後に {{channel}} へ配信します",
@@ -197,7 +257,18 @@
     "verdictUnreadable": "最新の判定を読み取れません",
     "verdictNoCalls": "コールなし",
     "verdictDelta": "{{was}} → {{now}}",
-    "verdictRecorded": "{{when}} 時点"
+    "verdictRecorded": "{{when}} 時点",
+    "deliveryKnownTargetLabel": "既知の送信先",
+    "deliveryKnownTargetPlaceholder": "既知の送信先を選択…",
+    "deliverySuggestionKind_private_chat": "自分のプライベートチャット",
+    "deliveryTargetPlaceholder_email_address": "name@example.com",
+    "deliveryTargetPlaceholder_chat": "チャット、グループ、ユーザーの ID",
+    "deliveryTargetPlaceholder_channel": "チャンネル ID",
+    "deliveryTargetPlaceholder_destination": "チャット / グループ / ユーザー ID",
+    "deliveryTargetPlaceholder_slack_destination": "#チャンネル、@ユーザー、会話 ID",
+    "deliveryTargetKind_slack_destination": "送信先",
+    "deliveryProtectPdf": "PDF をパスワードで保護",
+    "deliveryProtectPdfUnavailable": "PDF のパスワードが未設定です。「設定 > チャネル > メール」で設定すると保護を有効にできます。"
   },
   "reports": {
     "badge": "レポート",
@@ -217,7 +288,7 @@
     "unavailable": "レポートライブラリが利用できません",
     "loadError": "レポートを読み込めませんでした。",
     "emptyTitle": "レポートがまだありません",
-    "emptyBody": "まずエージェントでバックテストを作成し、ここに戻って確認してください。",
+    "emptyBody": "リサーチアシスタントにバックテストを依頼し、ここで結果を確認します。",
     "noMatchesTitle": "一致するレポートがありません",
     "noMatchesBody": "検索クエリ、状態フィルタ、日付範囲を見直してください。",
     "noPrompt": "プロンプトが記録されていません。",
@@ -231,9 +302,22 @@
   "connection": {
     "reconnecting": "再接続しています…",
     "disconnected": "接続が切れました。再接続するにはページを再読み込みしてください。",
-    "reload": "再読み込み"
+    "reload": "再読み込み",
+    "retry": "接続を再試行",
+    "requestFailed": "API サーバーに接続できません。サーバーの起動とネットワーク接続を確認してください。",
+    "requestTimeout": "リクエストがタイムアウトしました。サーバーへの接続を確認して再試行してください。",
+    "requestTimeoutMutation": "リクエストがタイムアウトしました。サーバーが処理を続けている可能性があります。現在の状態を確認してから再試行してください。"
   },
   "welcome": {
+    "tasks": {
+      "research": "株式を調べる",
+      "backtest": "戦略を検証する",
+      "portfolio": "保有資産を確認する",
+      "hint": "例文が入力欄に入ります。銘柄や戦略を編集してから送信できます。",
+      "researchPrompt": "AAPL の事業、最近の財務成績、主なリスクを現在利用できるデータで調べてください。出典と日付を示し、不足する情報を明記してください。",
+      "backtestPrompt": "AAPL の過去1年で20日・60日移動平均戦略をバックテストし、売買コストを含めて買い持ちとリターンやドローダウンを比較してください。リサーチのみです。",
+      "portfolioPrompt": "接続済み口座の保有資産、集中度、ポートフォリオのリスクをまとめてください。口座未接続なら設定方法を先に説明してください。注文の発注や変更はしないでください。"
+    },
     "categories": {
       "multiMarketBacktest": "A株バックテスト",
       "researchAnalysis": "リサーチ & 分析",
@@ -428,6 +512,10 @@
         "save": "設定を保存",
         "hotApply": "保存するとすぐに反映されます。再起動は不要です。",
         "saved": "チャンネル設定を保存しました",
+        "appliedInPlace": "設定を保存しました。チャンネルの再接続は不要でした。",
+        "appliedReset": "設定を保存しました。チャンネル接続を再起動しました。",
+        "appliedOnStart": "設定を保存しました。チャンネルの起動時に反映されます。",
+        "appliedReconnect": "設定を保存し、このチャンネルを再接続しました。",
         "saveFailed": "チャンネル設定の保存に失敗しました: {{message}}",
         "test": "接続テスト",
         "testing": "テスト中…",
@@ -645,6 +733,14 @@
           "max_attachments_per_email": {
             "label": "1 通あたりの添付数上限",
             "help": "1 通のメールから受け入れる添付ファイルの最大数（既定 5）。"
+          },
+          "trusted_authserv_id": {
+            "label": "信頼する認証サーバー",
+            "help": "受信サーバーの authserv-id（例：mx.google.com）。メール提供者が、この ID を偽装した外部の Authentication-Results ヘッダーを削除する必要があります。SPF または DKIM 検証時は必須です。空欄では受信メールを拒否します。"
+          },
+          "pdf_password": {
+            "label": "PDF レポートのパスワード",
+            "help": "保護を明示的に指定した定期 PDF レポート用の任意のパスワードです。サーバー側で保存され、定期ジョブやブラウザーへの応答には含まれません。"
           }
         },
         "websocket": {
@@ -712,6 +808,160 @@
             "label": "TLS 鍵パス",
             "help": "WSS 用のサーバー上の PEM 秘密鍵パス。証明書と鍵は両方を設定するか、両方空にしてください。アップロード素材ではなくサーバー上のファイルパスです。"
           }
+        },
+        "feishu": {
+          "app_id": {
+            "label": "App ID",
+            "help": "Feishu / Lark 開発者コンソールにあるアプリの App ID（cli_ で始まります）。"
+          },
+          "app_secret": {
+            "label": "App Secret",
+            "help": "アプリの App Secret。サーバー側に保存され、ブラウザに返されることはありません。"
+          },
+          "encrypt_key": {
+            "label": "Encrypt Key",
+            "help": "イベント購読設定の Encrypt Key。ロングコネクションモードでは省略可能です。"
+          },
+          "verification_token": {
+            "label": "Verification Token",
+            "help": "イベント購読設定の Verification Token。ロングコネクションモードでは省略可能です。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと会話できる Feishu の送信者 ID の許可リスト。空欄の場合はボットが見られる全員が対象になります。"
+          },
+          "react_emoji": {
+            "label": "作業中リアクション",
+            "help": "エージェントの作業中、受信したメッセージに付ける絵文字（デフォルトは THUMBSUP）。"
+          },
+          "done_emoji": {
+            "label": "完了リアクション",
+            "help": "タスク完了時に付ける絵文字。空欄の場合は付けません。"
+          },
+          "tool_hint_prefix": {
+            "label": "ツールヒントの接頭辞",
+            "help": "返信内のインラインツールヒントの前に表示される接頭辞。"
+          },
+          "group_policy": {
+            "label": "グループポリシー",
+            "help": "「mention」はグループで @ メンションされたときのみ返信し、「open」はすべてのグループメッセージに返信します。"
+          },
+          "reply_to_message": {
+            "label": "元のメッセージを引用",
+            "help": "返信ときに元のメッセージを引用して返します。"
+          },
+          "streaming": {
+            "label": "ストリーミング返信",
+            "help": "CardKit のライブ編集で返信をストリーミング出力します。"
+          },
+          "domain": {
+            "label": "ドメイン",
+            "help": "中国版 Feishu は「feishu」(open.feishu.cn)、国際版 Lark は「lark」(open.larksuite.com)。"
+          },
+          "topic_isolation": {
+            "label": "トピック別セッション",
+            "help": "グループの各トピックに専用のエージェントセッションを割り当てます。"
+          }
+        },
+        "slack": {
+          "bot_token": {
+            "label": "Botトークン（xoxb-）",
+            "help": "Slack ボットユーザーの OAuth トークン（xoxb- で始まります）。サーバー側に保存され、ブラウザに返されることはありません。"
+          },
+          "app_token": {
+            "label": "Appトークン（xapp-）",
+            "help": "connections:write スコープを持つ Slack アプリレベルトークン（xapp- で始まります）。Socket Mode に必要です。サーバー側に保存され、ブラウザに返されることはありません。"
+          },
+          "user_token_read_only": {
+            "label": "ユーザートークン読み取り専用",
+            "help": "動作フラグ（認証情報ではありません）：ユーザートークンのアクセスを読み取り専用に保ちます。"
+          },
+          "reply_in_thread": {
+            "label": "スレッドで返信",
+            "help": "チャンネルに直接投稿する代わりに、元のメッセージのスレッドで返信します。"
+          },
+          "react_emoji": {
+            "label": "作業中リアクション",
+            "help": "エージェントの作業中、受信メッセージに付けるリアクション（デフォルトは eyes）。"
+          },
+          "done_emoji": {
+            "label": "完了リアクション",
+            "help": "タスク完了時に付けるリアクション（デフォルトは white_check_mark）。空欄で無し。"
+          },
+          "include_thread_context": {
+            "label": "スレッドのコンテキストを含める",
+            "help": "ボットがスレッドに初めて呼び出されたとき、それまでのスレッドの返信をコンテキストとして先頭に付けます。"
+          },
+          "thread_context_limit": {
+            "label": "スレッドコンテキストの上限",
+            "help": "コンテキストとして含めるスレッドメッセージの最大数（デフォルト 20）。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと会話できる Slack ユーザー ID の許可リスト。DM とチャンネルのアクセスは DM ポリシーとグループポリシーでも制御されます。"
+          },
+          "group_policy": {
+            "label": "グループポリシー",
+            "help": "「mention」はチャンネルで @ メンションされたときのみ返信し、「open」はすべてのチャンネルメッセージに返信し、「allowlist」は下に列挙したチャンネルでのみ返信します。"
+          },
+          "group_allow_from": {
+            "label": "許可するチャンネル",
+            "help": "グループポリシーが「allowlist」の場合にボットが応答するチャンネル ID。"
+          },
+          "group_require_mention": {
+            "label": "許可チャンネルでメンションを要求",
+            "help": "「allowlist」ポリシーで、承認済みチャンネルでも @ メンションされたときのみ返信します。「mention」と「open」には影響しません。"
+          }
+        },
+        "discord": {
+          "token": {
+            "label": "ボットトークン",
+            "help": "Discord Developer Portal のボットトークンです（ユーザートークンや OAuth トークンではありません）。サーバー側に保存され、ブラウザに返されることはありません。"
+          },
+          "allow_from": {
+            "label": "許可する送信者",
+            "help": "エージェントと会話できる Discord ユーザー ID の許可リスト。空欄ですべて許可します。"
+          },
+          "allow_channels": {
+            "label": "許可するチャンネル",
+            "help": "ボットが応答する Discord チャンネル ID の許可リスト。空欄ですべてのチャンネルを許可します。"
+          },
+          "intents": {
+            "label": "ゲートウェイインテント",
+            "help": "ゲートウェイインテントのビットフィールド整数（デフォルト 37377 = GUILDS | GUILD_MESSAGES | DIRECT_MESSAGES | MESSAGE_CONTENT）。MESSAGE CONTENT は特権インテントで、Developer Portal で有効にしないとボットは接続できません。"
+          },
+          "group_policy": {
+            "label": "グループポリシー",
+            "help": "「mention」はサーバーのチャンネルで @ メンションされたときのみ返信し、「open」はすべてのチャンネルメッセージに返信します（いずれも許可リストに従います）。"
+          },
+          "read_receipt_emoji": {
+            "label": "既読リアクション",
+            "help": "受信メッセージにすぐ付ける確認用のリアクション（デフォルトは 👀）。返信が届くと削除されます。"
+          },
+          "working_emoji": {
+            "label": "作業中リアクション",
+            "help": "エージェントが作業中の間に付けるリアクション（デフォルトは 🔧）。作業中リアクションの遅延後に追加されます。"
+          },
+          "working_emoji_delay": {
+            "label": "作業中リアクションの遅延（秒）",
+            "help": "作業中リアクションを付けるまでの待機秒数。短い返信では表示されません（デフォルト 2.0）。"
+          },
+          "streaming": {
+            "label": "ストリーミング返信",
+            "help": "最終メッセージを一度に送信する代わりに、1 通の Discord メッセージを逐次編集して返信をストリーミングします。"
+          },
+          "proxy": {
+            "label": "プロキシ URL",
+            "help": "ゲートウェイ接続と API 呼び出しが経由する任意の HTTP プロキシ（例：http://host:port）。"
+          },
+          "proxy_username": {
+            "label": "プロキシのユーザー名",
+            "help": "プロキシのユーザー名（パスワードと組で設定してください。片方だけの場合は警告とともに無視されます）。サーバー側に保存され、ブラウザに返されることはありません。"
+          },
+          "proxy_password": {
+            "label": "プロキシのパスワード",
+            "help": "プロキシのパスワード（ユーザー名と組で設定してください。片方だけの場合は警告とともに無視されます）。サーバー側に保存され、ブラウザに返されることはありません。"
+          }
         }
       },
       "guides": {
@@ -754,6 +1004,26 @@
           "step4": "チャンネル実行中に保存するとサーバーがホットスワップされます。接続中のクライアント（この Web UI チャットを含む）は一時的に切断され、自動的に再接続します。",
           "step5": "「接続テスト」をクリックすると、SSL 証明書/鍵の素材とアドレスの可用性をローカルで検証します。",
           "docsLabel": "Vibe-Trading のドキュメントを開く"
+        },
+        "feishu": {
+          "title": "Feishu / Lark ボット設定ガイド",
+          "intro": "Feishu ボットは WebSocket ロングコネクションで接続するため、公開 IP も Webhook も不要です。",
+          "step1": "Feishu Open Platform（open.feishu.cn）でカスタムアプリを作成します。ターミナルで vibe-trading channels login feishu を実行すると、QR スキャンで作成でき、App ID と App Secret は自動的に保存されます。",
+          "step2": "アプリにボット機能を追加します。",
+          "step3": "イベント購読で「メッセージ受信 im.message.receive_v1」を購読し、ロングコネクションモードを選択します。",
+          "step4": "「認証情報と基本情報」から App ID と App Secret をコピーして、上の欄に貼り付けます。",
+          "step5": "バージョンを作成してアプリを公開し（テナントの仕様により管理者の承認が必要な場合があります）、ここでチャンネルを有効にすると再起動不要で即座に反映されます。国際版 Lark のテナントはドメインを lark に設定してください。",
+          "docsLabel": "Feishu Open Platform を開く"
+        },
+        "discord": {
+          "title": "Discord セットアップガイド",
+          "intro": "Discord ボットはボットトークンでゲートウェイに接続するため、公開 IP も Webhook も不要です。",
+          "step1": "Discord Developer Portal（discord.com/developers）でアプリケーションを作成します。",
+          "step2": "Bot ページを開き、トークンをリセットしてコピーします。",
+          "step3": "Privileged Gateway Intents で MESSAGE CONTENT INTENT を有効にします（デフォルトのインテントに必要です）。",
+          "step4": "bot（および applications.commands）スコープの OAuth2 招待 URL を生成し、ボットをサーバーに追加します。",
+          "step5": "ここにトークンを貼り付け、「接続テスト」をクリックしてからチャンネルを有効にします。",
+          "docsLabel": "Discord 開発者ドキュメントを開く"
         }
       }
     },
@@ -906,6 +1176,7 @@
     "dropFiles": "ここにファイルをドロップ",
     "removeAttachment": "{{filename}} を削除",
     "uploadFailed": "アップロードに失敗しました: {{error}}",
+    "messageTooLong": "添付情報とチーム指示を含むメッセージが {{limit}} 文字を超えています。短くしてから送信してください。",
     "failedToSend": "メッセージ送信に失敗しました。再試行してください。",
     "failedToContinue": "目標の続行に失敗しました。再試行してください。",
     "runtimeBadge": "取引モニター",
@@ -1009,6 +1280,33 @@
     "reproducibility": "再現性",
     "metrics": "メトリクス",
     "validationPayload": "検証",
+    "trust": {
+      "executionRecords": "実行記録",
+      "executionDescription": "記録された実行段階と、入力および結果のハッシュ。",
+      "noExecutionRecords": "この実行の実行記録は保存されていません。",
+      "startedAt": "開始（UTC）",
+      "endedAt": "終了（UTC）",
+      "argsHash": "引数の SHA-256",
+      "resultHash": "結果の SHA-256",
+      "metricEvidence": "指標の根拠",
+      "evidenceDescription": "保存された指標データへの参照です。チェックサムは記録されたファイルを識別します。この画面では独立した検証は行いません。",
+      "noMetricEvidence": "この実行の指標の根拠は記録されていません。",
+      "metric": "指標",
+      "artifact": "成果物",
+      "column": "列",
+      "row": "データ行（1 始まり、ヘッダーを除く）",
+      "artifactHash": "成果物の SHA-256",
+      "tools": {
+        "backtest": "バックテスト",
+        "load_data": "データ読み込み",
+        "generate_signals": "シグナル生成"
+      },
+      "status": {
+        "ok": "完了",
+        "error": "失敗",
+        "cancelled": "キャンセル済み"
+      }
+    },
     "artifactChecksums": "成果物チェックサム",
     "path": "パス",
     "size": "サイズ",
@@ -1335,7 +1633,7 @@
     "dead": "死亡",
     "skipped": "スキップ",
     "topByIr": "IR 上位 5",
-    "mostReversed": "最も反転",
+    "mostReversed": "ICが最も低い因子",
     "byTheme": "テーマ別",
     "noRows": "データなし。",
     "meanIc": "IC 平均",
@@ -1844,7 +2142,9 @@
       "errorReconnect": "口座の再接続に失敗しました",
       "errorReconnectTimeout": "ブラウザー認証がタイムアウトしました。再接続し、ブローカー認証を速やかに完了してください。",
       "errorSaveSettings": "ポートフォリオ設定を保存できません",
-      "errorExport": "書き出しに失敗しました"
+      "errorExport": "書き出しに失敗しました",
+      "exportResearch": "調査用スナップショットを出力",
+      "researchSnapshotHint": "認証情報や口座番号を含めず、この観測を出力します。portfolio_summary でスナップショット ID を再利用できます。"
     },
     "metrics": {
       "total": "総資産",
@@ -1993,5 +2293,53 @@
       "accountSave": "この口座を使う",
       "accountSaved": "口座を保存しました。"
     }
+  },
+  "analysis": {
+    "updated": "更新済み",
+    "updating": "計算中…",
+    "editing": "パラメータ変更済み",
+    "invalid": "有効なパラメータを入力してください",
+    "failed": "分析に失敗",
+    "previousResult": "前回のパラメータの結果を表示中",
+    "lastComputed": "計算時刻：{{time}}",
+    "advancedParameters": "詳細パラメータ",
+    "chainOnDemand": "必要なときに市場価格を取得します。損益計算には入力したプレミアムを使います。",
+    "allStrikes": "全権利行使価格を表示",
+    "nearAtm": "ATM付近を表示",
+    "chainQuote": "{{ticker}} 原資産価格：{{price}}",
+    "lastFetched": "取得時刻：{{time}}",
+    "assetsValidation": "異なる資産を2～20件、カンマ・空白・セミコロンで区切って入力してください。",
+    "windowObservations": "リターン観測数",
+    "coverage": "整合した観測 {{count}} 件 · {{start}}～{{end}}",
+    "usedAssets": "使用資産：{{assets}}",
+    "missingAssets": "価格未取得：{{assets}}",
+    "regimeMethod": "レジーム分析はPearson相関を使います。選択した方法は行列に適用されます。",
+    "evaluateFactor": "この因子を評価",
+    "evaluateSelected": "選択した因子を評価（{{count}}）",
+    "factorSelectionHint": "1つの因子を評価、または少数を比較できます。全因子の評価には時間がかかります。",
+    "resultLimit": "表示行数（計算量は減りません）",
+    "evaluationScope": "株式ユニバースで{{count}}個の因子を評価します。",
+    "checkingData": "データ要件を確認中…",
+    "ready_public_data": "公開データを使用します。実際の可用性は実行時に確認されます。",
+    "ready_tushare_ready": "Tushare設定済み。CSI 300には日次価格、調整係数、過去の構成銘柄の権限も必要です。",
+    "ready_tushare_token_missing": "CSI 300にはTushareトークンとデータ権限が必要です。設定するかS&P 500を選んでください。",
+    "ready_tushare_dependency_missing": "TushareをインストールするかS&P 500を選んでください。",
+    "ready_single_asset": "BTC-USDTは単一資産です。横断面ICには株式ユニバースが必要です。CSI 300かS&P 500を選んでください。",
+    "stage_loading_data": "銘柄と過去の価格を取得中…",
+    "stage_preparing_returns": "将来リターンを準備中…",
+    "stage_computing": "因子スコアを計算中…",
+    "backgroundJob": "サーバー稼働中は、このページを離れて後でタスクに戻れます。",
+    "resumeJob": "タスクに再接続",
+    "streamInterrupted": "接続が中断されました。再接続して進捗と結果を取得してください。",
+    "jobExpired": "タスク期限切れ、またはサーバーが再起動しました。新しい評価を開始してください。",
+    "source_unavailable": "データ源が利用不可または未設定",
+    "fetch_failed": "取得に失敗",
+    "no_data": "この銘柄と期間の価格データなし",
+    "factorCoverage": "要求した{{total}}銘柄のうち{{count}}銘柄の価格を取得しました。",
+    "survivorshipBias": "現在の指数構成銘柄を使用するため、過去の結果には生存者バイアスがあります。",
+    "degradedUniverse": "指数の銘柄一覧を取得できず、開示された小規模な代替ユニバースを使用します。",
+    "selectedFactor": "選択した因子：{{id}}。この因子のみ評価します。",
+    "fundamentalsRequirement": "基本面因子にはPIT安全なSEC財務情報と米国株ユニバース（S&P 500）が必要です。",
+    "noEvaluableFactors": "評価できる因子がありません。期間を延ばし、必要なデータ項目と株式ユニバースを確認してください。"
   }
 }

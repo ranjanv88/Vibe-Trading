@@ -244,6 +244,140 @@ function websocketEntry(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function feishuEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    display_name: "Feishu",
+    available: true,
+    loaded: true,
+    install_hint: "",
+    error: "",
+    supports_test: true,
+    sdk_available: true,
+    fields: [
+      { key: "app_id", type: "text", secret: false, required: true, help_key: "settings.channels.fields.feishu.app_id" },
+      { key: "app_secret", type: "password", secret: true, required: true, help_key: "settings.channels.fields.feishu.app_secret" },
+      { key: "encrypt_key", type: "password", secret: true, required: false, help_key: "settings.channels.fields.feishu.encrypt_key" },
+      { key: "verification_token", type: "password", secret: true, required: false, help_key: "settings.channels.fields.feishu.verification_token" },
+      { key: "allow_from", type: "list", secret: false, required: false, help_key: "settings.channels.fields.feishu.allow_from" },
+      { key: "react_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.feishu.react_emoji" },
+      { key: "done_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.feishu.done_emoji" },
+      { key: "tool_hint_prefix", type: "text", secret: false, required: false, help_key: "settings.channels.fields.feishu.tool_hint_prefix" },
+      { key: "group_policy", type: "text", secret: false, required: false, help_key: "settings.channels.fields.feishu.group_policy" },
+      { key: "reply_to_message", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.feishu.reply_to_message" },
+      { key: "streaming", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.feishu.streaming" },
+      { key: "domain", type: "text", secret: false, required: false, help_key: "settings.channels.fields.feishu.domain" },
+      { key: "topic_isolation", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.feishu.topic_isolation" },
+    ],
+    values: {
+      enabled: false,
+      app_id: "cli_a9f8e7d6c5b4",
+      allow_from: [],
+      react_emoji: "THUMBSUP",
+      done_emoji: "",
+      tool_hint_prefix: "",
+      group_policy: "mention",
+      reply_to_message: true,
+      streaming: true,
+      domain: "feishu",
+      topic_isolation: false,
+    },
+    secrets: {
+      app_secret: { set: true, masked: "****abcd" },
+      encrypt_key: { set: true, masked: "****ef01" },
+      verification_token: { set: true, masked: "****2345" },
+    },
+    ...overrides,
+  };
+}
+
+function slackEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    display_name: "Slack",
+    available: true,
+    loaded: true,
+    install_hint: "",
+    error: "",
+    supports_test: false,
+    sdk_available: true,
+    fields: [
+      { key: "bot_token", type: "password", secret: true, required: true, help_key: "settings.channels.fields.slack.bot_token" },
+      { key: "app_token", type: "password", secret: true, required: true, help_key: "settings.channels.fields.slack.app_token" },
+      { key: "user_token_read_only", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.slack.user_token_read_only" },
+      { key: "reply_in_thread", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.slack.reply_in_thread" },
+      { key: "react_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.slack.react_emoji" },
+      { key: "done_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.slack.done_emoji" },
+      { key: "include_thread_context", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.slack.include_thread_context" },
+      { key: "thread_context_limit", type: "text", secret: false, required: false, help_key: "settings.channels.fields.slack.thread_context_limit" },
+      { key: "allow_from", type: "list", secret: false, required: false, help_key: "settings.channels.fields.slack.allow_from" },
+      { key: "group_policy", type: "text", secret: false, required: false, help_key: "settings.channels.fields.slack.group_policy", choices: ["open", "mention", "allowlist"] },
+      { key: "group_allow_from", type: "list", secret: false, required: false, help_key: "settings.channels.fields.slack.group_allow_from" },
+      { key: "group_require_mention", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.slack.group_require_mention" },
+    ],
+    values: {
+      enabled: false,
+      user_token_read_only: true,
+      reply_in_thread: true,
+      react_emoji: "eyes",
+      done_emoji: "white_check_mark",
+      include_thread_context: true,
+      thread_context_limit: 20,
+      allow_from: [],
+      group_policy: "mention",
+      group_allow_from: [],
+      group_require_mention: false,
+    },
+    secrets: {
+      bot_token: { set: true, masked: "****b123" },
+      app_token: { set: true, masked: "****a456" },
+    },
+    ...overrides,
+  };
+}
+
+function discordEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    display_name: "Discord",
+    available: true,
+    loaded: true,
+    install_hint: "",
+    error: "",
+    supports_test: true,
+    sdk_available: true,
+    fields: [
+      { key: "token", type: "password", secret: true, required: true, help_key: "settings.channels.fields.discord.token" },
+      { key: "allow_from", type: "list", secret: false, required: false, help_key: "settings.channels.fields.discord.allow_from" },
+      { key: "allow_channels", type: "list", secret: false, required: false, help_key: "settings.channels.fields.discord.allow_channels" },
+      { key: "intents", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.intents" },
+      { key: "group_policy", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.group_policy", choices: ["mention", "open"] },
+      { key: "read_receipt_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.read_receipt_emoji" },
+      { key: "working_emoji", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.working_emoji" },
+      { key: "working_emoji_delay", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.working_emoji_delay" },
+      { key: "streaming", type: "bool", secret: false, required: false, help_key: "settings.channels.fields.discord.streaming" },
+      { key: "proxy", type: "text", secret: false, required: false, help_key: "settings.channels.fields.discord.proxy" },
+      { key: "proxy_username", type: "password", secret: true, required: false, help_key: "settings.channels.fields.discord.proxy_username" },
+      { key: "proxy_password", type: "password", secret: true, required: false, help_key: "settings.channels.fields.discord.proxy_password" },
+    ],
+    values: {
+      enabled: false,
+      allow_from: [],
+      allow_channels: [],
+      intents: 37377,
+      group_policy: "mention",
+      read_receipt_emoji: "👀",
+      working_emoji: "🔧",
+      working_emoji_delay: 2,
+      streaming: true,
+      proxy: "",
+    },
+    secrets: {
+      token: { set: true, masked: "****cdef" },
+      proxy_username: { set: true, masked: "****user" },
+      proxy_password: { set: true, masked: "****pass" },
+    },
+    ...overrides,
+  };
+}
+
 function channelsConfig(overrides: Record<string, unknown> = {}) {
   return {
     config_path: "~/.vibe-trading/agent.json",
@@ -298,6 +432,44 @@ async function renderWebsocketExpanded() {
   await screen.findByText("IM Channels");
   fireEvent.click(await screen.findByRole("button", { name: "Configure WebSocket" }));
   expect(await screen.findByDisplayValue("127.0.0.1")).toBeInTheDocument();
+}
+
+/** Render the card with the Slack config panel expanded. */
+async function renderSlackExpanded() {
+  apiMock.getChannelsConfig.mockResolvedValue(channelsConfig({
+    channels: { dingtalk: dingtalkEntry(), slack: slackEntry() },
+  }));
+  render(<ChannelSettings />);
+  await screen.findByText("IM Channels");
+  fireEvent.click(await screen.findByRole("button", { name: "Configure Slack" }));
+  expect(await screen.findByDisplayValue("eyes")).toBeInTheDocument();
+}
+
+/** Render the card with the Discord config panel expanded. */
+async function renderDiscordExpanded() {
+  apiMock.getChannelsConfig.mockResolvedValue(channelsConfig({
+    channels: { dingtalk: dingtalkEntry(), discord: discordEntry() },
+  }));
+  render(<ChannelSettings />);
+  await screen.findByText("IM Channels");
+  fireEvent.click(await screen.findByRole("button", { name: "Configure Discord" }));
+  expect(await screen.findByDisplayValue("37377")).toBeInTheDocument();
+}
+
+/** Render the card with the three guided IM channels available. */
+function guidedChannelsConfig() {
+  return channelsConfig({
+    channels: { dingtalk: dingtalkEntry(), qq: qqEntry(), feishu: feishuEntry() },
+  });
+}
+
+/** Render the card with the Feishu config panel expanded. */
+async function renderFeishuExpanded() {
+  apiMock.getChannelsConfig.mockResolvedValue(guidedChannelsConfig());
+  render(<ChannelSettings />);
+  await screen.findByText("IM Channels");
+  fireEvent.click(await screen.findByRole("button", { name: "Configure Feishu" }));
+  expect(await screen.findByDisplayValue("cli_a9f8e7d6c5b4")).toBeInTheDocument();
 }
 
 describe("ChannelSettings config panel", () => {
@@ -489,6 +661,23 @@ describe("ChannelSettings config panel", () => {
     const [, secondBody] = apiMock.putChannelConfig.mock.calls[1] as [string, Record<string, unknown>];
     expect(secondBody.clear_client_secret).toBe(true);
     expect((secondBody.config as Record<string, unknown>).client_secret).toBeUndefined();
+  });
+
+  it.each([
+    ["refreshed", undefined, "Settings saved without reconnecting the channel."],
+    ["reset", "RuntimeError: upstream unavailable", "Settings saved. Channel connections were restarted."],
+    ["deferred", undefined, "Settings saved. Changes will apply when channels start."],
+  ])("explains the %s apply result after saving", async (applied, resetReason, message) => {
+    apiMock.putChannelConfig.mockResolvedValue({
+      channel: dingtalkEntry(), applied, reset_reason: resetReason,
+    });
+    await renderExpanded();
+    fireEvent.change(screen.getByPlaceholderText("Keep current (****abcd)"), {
+      target: { value: "new-secret" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+    expect(await screen.findByText(message!)).toBeInTheDocument();
+    if (resetReason) expect(screen.getByText(resetReason)).toBeInTheDocument();
   });
 
   it("disables Save until the form is dirty", async () => {
@@ -706,6 +895,258 @@ describe("ChannelSettings config panel", () => {
     fireEvent.click(guideToggle);
     expect(guideToggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText(/keep 127\.0\.0\.1 for local-only use/)).not.toBeInTheDocument();
+  });
+
+  it("renders every Feishu field from the backend help_keys with localized labels", async () => {
+    await renderFeishuExpanded();
+
+    expect(screen.getByText("App ID")).toBeInTheDocument();
+    expect(screen.getByText("App Secret")).toBeInTheDocument();
+    expect(screen.getByText("Encrypt Key")).toBeInTheDocument();
+    expect(screen.getByText("Verification Token")).toBeInTheDocument();
+    expect(screen.getByText("Allowed senders")).toBeInTheDocument();
+    expect(screen.getByText("Working emoji")).toBeInTheDocument();
+    expect(screen.getByText("Done emoji")).toBeInTheDocument();
+    expect(screen.getByText("Tool hint prefix")).toBeInTheDocument();
+    expect(screen.getByText("Group policy")).toBeInTheDocument();
+    expect(screen.getByText("Quote the original message")).toBeInTheDocument();
+    expect(screen.getByText("Streaming replies")).toBeInTheDocument();
+    expect(screen.getByText("Domain")).toBeInTheDocument();
+    expect(screen.getByText("Per-topic sessions")).toBeInTheDocument();
+    expect(screen.getByText(/starts with cli_/)).toBeInTheDocument();
+    // Both Event Subscription secrets document the long-connection optionality.
+    expect(screen.getAllByText(/Optional for long-connection mode/)).toHaveLength(2);
+    expect(screen.getByText(/default THUMBSUP/)).toBeInTheDocument();
+    // The three secret fields keep the generic masked placeholder and password type.
+    for (const masked of ["****abcd", "****ef01", "****2345"]) {
+      const secretInput = screen.getByPlaceholderText(`Keep current (${masked})`);
+      expect(secretInput).toHaveAttribute("type", "password");
+      expect(secretInput).toHaveValue("");
+    }
+  });
+
+  it("toggles the Feishu setup guide with its steps and external link", async () => {
+    await renderFeishuExpanded();
+
+    expect(screen.queryByText(/Create a Custom App on the Feishu Open Platform/)).not.toBeInTheDocument();
+
+    const guideToggle = screen.getByRole("button", { name: "Feishu / Lark bot setup" });
+    expect(guideToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(guideToggle);
+
+    expect(guideToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/WebSocket long connection, so no public IP/)).toBeInTheDocument();
+    expect(screen.getByText(/Create a Custom App on the Feishu Open Platform/)).toBeInTheDocument();
+    expect(screen.getByText(/Add the Bot capability to the app/)).toBeInTheDocument();
+    expect(screen.getByText(/subscribe to receiving messages \(im\.message\.receive_v1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Copy the App ID and App Secret from Credentials & Basic Info/)).toBeInTheDocument();
+    expect(screen.getByText(/Create a version and publish the app/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the Feishu Open Platform" }))
+      .toHaveAttribute("href", "https://open.feishu.cn/");
+
+    fireEvent.click(guideToggle);
+    expect(guideToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/Create a Custom App on the Feishu Open Platform/)).not.toBeInTheDocument();
+  });
+
+  it("never renders smuggled Feishu secret values, only the masked placeholders", async () => {
+    // A contract-violating response that carries raw secrets in `values`
+    // still must not reach the DOM: secret widgets bind to empty drafts.
+    const feishu = feishuEntry({
+      values: {
+        ...feishuEntry().values,
+        app_secret: "leaked-app-secret",
+        encrypt_key: "leaked-encrypt-key",
+        verification_token: "leaked-verification-token",
+      },
+    });
+    apiMock.getChannelsConfig.mockResolvedValue(channelsConfig({ channels: { feishu } }));
+    render(<ChannelSettings />);
+    await screen.findByText("IM Channels");
+    fireEvent.click(await screen.findByRole("button", { name: "Configure Feishu" }));
+    expect(await screen.findByDisplayValue("cli_a9f8e7d6c5b4")).toBeInTheDocument();
+
+    const secretInputs = Array.from(document.querySelectorAll("input[type=password]"));
+    expect(secretInputs).toHaveLength(3);
+    for (const secretInput of secretInputs) {
+      expect(secretInput).toHaveValue("");
+    }
+    expect(document.body.textContent).not.toContain("leaked-app-secret");
+    expect(document.body.textContent).not.toContain("leaked-encrypt-key");
+    expect(document.body.textContent).not.toContain("leaked-verification-token");
+  });
+
+  it("renders every Slack field from the backend help_keys with localized labels", async () => {
+    await renderSlackExpanded();
+
+    expect(screen.getByText("Bot token (xoxb-)")).toBeInTheDocument();
+    expect(screen.getByText("App token (xapp-)")).toBeInTheDocument();
+    expect(screen.getByText("User token read-only")).toBeInTheDocument();
+    expect(screen.getByText("Reply in thread")).toBeInTheDocument();
+    expect(screen.getByText("Working emoji")).toBeInTheDocument();
+    expect(screen.getByText("Done emoji")).toBeInTheDocument();
+    expect(screen.getByText("Include thread context")).toBeInTheDocument();
+    expect(screen.getByText("Thread context limit")).toBeInTheDocument();
+    expect(screen.getByText("Allowed senders")).toBeInTheDocument();
+    expect(screen.getByText("Group policy")).toBeInTheDocument();
+    expect(screen.getByText("Allowed channels")).toBeInTheDocument();
+    expect(screen.getByText("Require mention in allowed channels")).toBeInTheDocument();
+    // The audited secret=False subtraction keeps the behavior bool editable.
+    expect(screen.getByRole("checkbox", { name: "User token read-only" })).toBeChecked();
+    // Both credentials keep the generic masked placeholder and password type.
+    for (const masked of ["****b123", "****a456"]) {
+      const secretInput = screen.getByPlaceholderText(`Keep current (${masked})`);
+      expect(secretInput).toHaveAttribute("type", "password");
+      expect(secretInput).toHaveValue("");
+    }
+  });
+
+  it("renders a choices field as a select and keeps choice-less fields as inputs", async () => {
+    await renderSlackExpanded();
+
+    const select = screen.getByLabelText("Group policy");
+    expect(select.tagName).toBe("SELECT");
+    expect(Array.from(select.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "open",
+      "mention",
+      "allowlist",
+    ]);
+    expect(select).toHaveValue("mention");
+
+    // A field without choices keeps its existing text widget.
+    const emojiInput = screen.getByLabelText("Working emoji");
+    expect(emojiInput.tagName).toBe("INPUT");
+    expect(emojiInput).toHaveValue("eyes");
+
+    // The select flows through the same form-state path as text inputs.
+    fireEvent.change(select, { target: { value: "allowlist" } });
+    expect(select).toHaveValue("allowlist");
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+
+    await waitFor(() => expect(apiMock.putChannelConfig).toHaveBeenCalledTimes(1));
+    expect(apiMock.putChannelConfig).toHaveBeenLastCalledWith("slack", {
+      config: expect.objectContaining({ group_policy: "allowlist" }),
+    });
+  });
+
+  it("keeps a stored group_policy value outside the choices visible", async () => {
+    apiMock.getChannelsConfig.mockResolvedValue(channelsConfig({
+      channels: {
+        slack: slackEntry({
+          values: { ...slackEntry().values, group_policy: "legacy" },
+        }),
+      },
+    }));
+    render(<ChannelSettings />);
+    await screen.findByText("IM Channels");
+    fireEvent.click(await screen.findByRole("button", { name: "Configure Slack" }));
+
+    const select = await screen.findByLabelText("Group policy");
+    expect(select).toHaveValue("legacy");
+    expect(Array.from(select.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "legacy",
+      "open",
+      "mention",
+      "allowlist",
+    ]);
+  });
+
+  it("renders every Discord field from the backend help_keys with localized labels", async () => {
+    await renderDiscordExpanded();
+
+    expect(screen.getByText("Bot token")).toBeInTheDocument();
+    expect(screen.getByText("Allowed senders")).toBeInTheDocument();
+    expect(screen.getByText("Allowed channels")).toBeInTheDocument();
+    expect(screen.getByText("Gateway intents")).toBeInTheDocument();
+    expect(screen.getByText("Group policy")).toBeInTheDocument();
+    expect(screen.getByText("Read receipt emoji")).toBeInTheDocument();
+    expect(screen.getByText("Working emoji")).toBeInTheDocument();
+    expect(screen.getByText("Working emoji delay (s)")).toBeInTheDocument();
+    expect(screen.getByText("Streaming replies")).toBeInTheDocument();
+    expect(screen.getByText("Proxy URL")).toBeInTheDocument();
+    expect(screen.getByText("Proxy username")).toBeInTheDocument();
+    expect(screen.getByText("Proxy password")).toBeInTheDocument();
+    expect(screen.getByText(/MESSAGE CONTENT is a privileged intent/)).toBeInTheDocument();
+    // token is the only required field: the decorative asterisk marks it.
+    expect(screen.getByText("Bot token").textContent).toContain("*");
+    // All three credentials keep the generic masked placeholder and password type.
+    for (const masked of ["****cdef", "****user", "****pass"]) {
+      const secretInput = screen.getByPlaceholderText(`Keep current (${masked})`);
+      expect(secretInput).toHaveAttribute("type", "password");
+      expect(secretInput).toHaveValue("");
+    }
+  });
+
+  it("renders the Discord group_policy choices as a select with mention and open", async () => {
+    await renderDiscordExpanded();
+
+    const select = screen.getByLabelText("Group policy");
+    expect(select.tagName).toBe("SELECT");
+    expect(Array.from(select.querySelectorAll("option")).map((option) => option.value)).toEqual([
+      "mention",
+      "open",
+    ]);
+    expect(select).toHaveValue("mention");
+
+    // The select flows through the same form-state path as text inputs.
+    fireEvent.change(select, { target: { value: "open" } });
+    expect(select).toHaveValue("open");
+    fireEvent.click(screen.getByRole("button", { name: "Save configuration" }));
+
+    await waitFor(() => expect(apiMock.putChannelConfig).toHaveBeenCalledTimes(1));
+    expect(apiMock.putChannelConfig).toHaveBeenLastCalledWith("discord", {
+      config: expect.objectContaining({ group_policy: "open" }),
+    });
+  });
+
+  it("never renders smuggled Discord secret values, only the masked placeholders", async () => {
+    // A contract-violating response that carries raw secrets in `values`
+    // still must not reach the DOM: secret widgets bind to empty drafts.
+    const discord = discordEntry({
+      values: {
+        ...discordEntry().values,
+        token: "leaked-bot-token",
+        proxy_username: "leaked-proxy-user",
+        proxy_password: "leaked-proxy-pass",
+      },
+    });
+    apiMock.getChannelsConfig.mockResolvedValue(channelsConfig({ channels: { discord } }));
+    render(<ChannelSettings />);
+    await screen.findByText("IM Channels");
+    fireEvent.click(await screen.findByRole("button", { name: "Configure Discord" }));
+    expect(await screen.findByDisplayValue("37377")).toBeInTheDocument();
+
+    const secretInputs = Array.from(document.querySelectorAll("input[type=password]"));
+    expect(secretInputs).toHaveLength(3);
+    for (const secretInput of secretInputs) {
+      expect(secretInput).toHaveValue("");
+    }
+    expect(document.body.textContent).not.toContain("leaked-bot-token");
+    expect(document.body.textContent).not.toContain("leaked-proxy-user");
+    expect(document.body.textContent).not.toContain("leaked-proxy-pass");
+  });
+
+  it("toggles the Discord setup guide with its steps and external link", async () => {
+    await renderDiscordExpanded();
+
+    expect(screen.queryByText(/Create an application in the Discord Developer Portal/)).not.toBeInTheDocument();
+
+    const guideToggle = screen.getByRole("button", { name: "Discord setup guide" });
+    expect(guideToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(guideToggle);
+
+    expect(guideToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(/Create an application in the Discord Developer Portal/)).toBeInTheDocument();
+    expect(screen.getByText(/reset the token/)).toBeInTheDocument();
+    expect(screen.getByText(/enable MESSAGE CONTENT INTENT/)).toBeInTheDocument();
+    expect(screen.getByText(/applications\.commands/)).toBeInTheDocument();
+    expect(screen.getByText(/click Test connection, then enable the channel/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open the Discord developer documentation" }))
+      .toHaveAttribute("href", "https://discord.com/developers/docs/intro");
+
+    fireEvent.click(guideToggle);
+    expect(guideToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/Create an application in the Discord Developer Portal/)).not.toBeInTheDocument();
   });
 
   it("renders no setup guide for a channel without a guide definition", async () => {

@@ -7,9 +7,10 @@ no new dependencies.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -143,6 +144,20 @@ def _compute_volume_stats(
             ratio = float(latest / sma)
 
     return {"latest": latest, "sma_20": sma, "ratio_20": ratio}
+
+
+def _dataset_fingerprint(
+    close: pd.Series, volume: pd.Series | None, interval: str
+) -> str:
+    """SHA-256 of the exact bars (date, close, volume) the indicators use."""
+    volumes = volume.tolist() if volume is not None else []
+    volumes += [None] * (len(close) - len(volumes))
+    bars = [
+        [str(label), float(price), None if pd.isna(vol) else float(vol)]
+        for label, price, vol in zip(close.index, close, volumes)
+    ]
+    canonical = json.dumps([interval, bars], separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _compute_sma(close: pd.Series, period: int) -> float | None:
@@ -292,9 +307,10 @@ class TechnicalIndicatorTool(BaseTool):
         "(bullish/bearish/neutral with strength and volume confirmation) plus "
         "latest/20-bar volume statistics for a trading symbol "
         "(volume.unit is the serving source's declared unit -- lots or shares -- "
-        "or null when undeclared). "
-        "Uses the project's data loaders "
-        "to fetch price history, then computes indicators locally."
+        "or null when undeclared). Returns read_identity with the acquisition "
+        "boundary, serving provenance and a fingerprint of the exact bars used. "
+        "Uses the project's data loaders to fetch price history, then computes "
+        "indicators locally."
     )
     parameters = {
         "type": "object",
@@ -319,11 +335,20 @@ class TechnicalIndicatorTool(BaseTool):
                 ),
                 "default": _DEFAULT_LOOKBACK,
             },
+            "end_date": {
+                "type": "string",
+                "description": (
+                    "Optional YYYY-MM-DD acquisition boundary. Omit it for the "
+                    "current local date. The boundary pins the requested period; "
+                    "read_identity.dataset_fingerprint identifies the exact bars used."
+                ),
+            },
         },
         "required": ["symbol"],
     }
     repeatable = True
     is_readonly = True
+    replay_after_compaction = True
 
     def execute(self, **kwargs: Any) -> str:
         symbol = str(kwargs.get("symbol", "")).strip()
@@ -349,10 +374,22 @@ class TechnicalIndicatorTool(BaseTool):
             lookback = _DEFAULT_LOOKBACK
         lookback = max(10, min(lookback, _MAX_LOOKBACK))
 
-        # Fetch enough bars to cover the longest indicator window + buffer.
-        end_date = datetime.now().strftime("%Y-%m-%d")
+        # One clock read per call, or an explicit zero-padded YYYY-MM-DD boundary.
+        end_date_raw = str(kwargs.get("end_date") or "").strip()
+        if end_date_raw:
+            try:
+                reference_date = date.fromisoformat(end_date_raw)
+            except ValueError:
+                reference_date = None
+            if reference_date is None or reference_date.isoformat() != end_date_raw:
+                return json.dumps(
+                    {"ok": False, "error": "end_date must use YYYY-MM-DD"}
+                )
+        else:
+            reference_date = datetime.now().date()
+        end_date = reference_date.isoformat()
         days = lookback * _CALENDAR_DAYS_PER_BAR.get(interval, 2)
-        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        start_date = (reference_date - timedelta(days=days)).isoformat()
 
         try:
             data = fetch_market_data(
@@ -507,6 +544,15 @@ class TechnicalIndicatorTool(BaseTool):
                 "interval": interval,
                 "latest_close": latest_close,
                 "latest_date": latest_date,
+                "read_identity": {
+                    "mode": "pinned_boundary" if end_date_raw else "latest_boundary",
+                    "requested_end_date": end_date,
+                    "bar_count": len(close),
+                    "dataset_fingerprint": _dataset_fingerprint(
+                        close, volume, interval
+                    ),
+                    "provenance": provenance if isinstance(provenance, dict) else None,
+                },
                 "indicators": indicators,
             },
             ensure_ascii=False,

@@ -370,7 +370,8 @@ class PersistentMemory:
             try:
                 from src.memory.search_index import get_shared_index
                 index = get_shared_index()
-                matches = index.search(query, max_results=max_results)
+                candidate_limit = max_results
+                matches = index.search(query, max_results=candidate_limit)
 
                 # Auto-rebuild on first empty search if entries exist on disk
                 all_entries = None
@@ -383,7 +384,7 @@ class PersistentMemory:
                         ]
                         index.rebuild_all(entries_data)
                         index._auto_rebuilt = True
-                        matches = index.search(query, max_results=max_results)
+                        matches = index.search(query, max_results=candidate_limit)
 
                 if matches:
                     # Map FTS results back to full entries
@@ -393,6 +394,22 @@ class PersistentMemory:
                     fts_pairs = [
                         (m, entry_map[m.entry_id]) for m in matches if m.entry_id in entry_map
                     ]
+                    # Files are canonical. Keep the FTS ordering but expand the
+                    # candidate window until enough current entries survive,
+                    # or the index is exhausted; a fixed buffer can still be
+                    # filled entirely by externally removed memories.
+                    while (
+                        candidate_limit > 0
+                        and len(matches) == candidate_limit
+                        and len(fts_pairs) < max_results
+                    ):
+                        candidate_limit *= 2
+                        matches = index.search(query, max_results=candidate_limit)
+                        fts_pairs = [
+                            (m, entry_map[m.entry_id])
+                            for m in matches
+                            if m.entry_id in entry_map
+                        ]
                     if fts_pairs:
                         if _is_decay_enabled():
                             # FTS5's rank is more negative for stronger matches;
@@ -626,13 +643,18 @@ class PersistentMemory:
         return path
 
     def remove(self, name: str, memory_type: str | None = None) -> bool:
-        """Remove a memory entry by name.
+        """Remove a memory entry by title or filename stem.
 
         One title can exist under several memory types, each in its own file
         (``{memory_type}_{slug}.md``, #1525), so a bare title can be ambiguous.
 
+        Falls back to filename-stem resolution (matching ``find()``) when no
+        title matches, so a name that resolves via ``find()`` or the CLI's
+        ``memory forget`` command also resolves here instead of silently
+        reporting "not found" for the same entry.
+
         Args:
-            name: Title of the entry to remove.
+            name: Title or filename stem of the entry to remove.
             memory_type: The entry's type; needed only when the title exists
                 under more than one type.
 
@@ -645,11 +667,22 @@ class PersistentMemory:
         """
         from src.config.accessor import get_env_config
 
+        name = name.strip()
+        if not name:
+            return False
+        entries = self._scan_entries()
         matches = [
             entry
-            for entry in self._scan_entries()
+            for entry in entries
             if entry.title == name and (memory_type is None or entry.memory_type == memory_type)
         ]
+        if not matches:
+            matches = [
+                entry
+                for entry in entries
+                if (entry.path.stem == name or entry.path.stem.endswith(f"_{name}"))
+                and (memory_type is None or entry.memory_type == memory_type)
+            ]
         if not matches:
             return False
         if len(matches) > 1:
