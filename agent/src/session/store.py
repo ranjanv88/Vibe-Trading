@@ -98,9 +98,29 @@ class SessionStore:
     def update_session(self, session: Session) -> None:
         """Update a session.
 
+        The ``tool_profile`` binding is immutable after creation: if the
+        stored record carries a profile and the incoming object carries a
+        different one (including ``None``), the stored profile wins. Every
+        update path -- title edits, message sends, attempt bookkeeping --
+        funnels through here, so enforcing it at this layer means no caller
+        can strip or change a session's profile by writing a stale or
+        hand-built Session object.
+
         Args:
             session: Modified Session instance.
         """
+        existing = self._read_json(self._session_file(session.session_id))
+        if isinstance(existing, dict):
+            stored_profile = existing.get("tool_profile")
+            if stored_profile and session.tool_profile != stored_profile:
+                logger.warning(
+                    "Refusing tool_profile change for session %s (%r -> %r): "
+                    "the profile is bound at creation",
+                    session.session_id,
+                    stored_profile,
+                    session.tool_profile,
+                )
+                session.tool_profile = stored_profile
         self._write_json(self._session_file(session.session_id), session.to_dict())
 
     def delete_session(self, session_id: str) -> bool:

@@ -77,6 +77,10 @@ class ToolRegistry:
         """Register a tool."""
         self._tools[tool.name] = tool
 
+    def remove(self, name: str) -> bool:
+        """Remove a tool by name. Returns True when a tool was removed."""
+        return self._tools.pop(name, None) is not None
+
     def get(self, name: str) -> Optional[BaseTool]:
         """Retrieve a tool by name."""
         return self._tools.get(name)

@@ -119,6 +119,18 @@ class Principal:
         )
 
 
+#: Tool profile that binds a session to the read-only tool set. This is the
+#: only named profile today. It is a server-reserved session property: it is
+#: chosen at creation time, stored as a top-level field of the session record
+#: (never inside the client-writable ``config`` dict), and no update or
+#: message path may change or remove it afterwards. Sessions created without
+#: a profile (``tool_profile=None``) keep the historical full tool registry.
+TOOL_PROFILE_RESEARCH_ONLY = "research_only"
+
+#: Every tool profile value the server accepts at session creation.
+VALID_TOOL_PROFILES: frozenset[str] = frozenset({TOOL_PROFILE_RESEARCH_ONLY})
+
+
 class SessionStatus(str, Enum):
     """Session lifecycle states."""
 
@@ -155,6 +167,12 @@ class Session:
             before principals existed or by a path that has no request context.
             None means "unknown owner", which is different from an
             unattributable one -- do not collapse the two.
+        tool_profile: Server-reserved tool profile bound at creation, or None
+            for the historical full tool set. ``"research_only"`` restricts
+            every per-message registry built for this session to read-only
+            tools. Deliberately NOT part of ``config``: config is
+            client-writable session data, and a client that could write the
+            profile could also remove it.
     """
 
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
@@ -165,6 +183,11 @@ class Session:
     last_attempt_id: Optional[str] = None
     config: Dict[str, Any] = field(default_factory=dict)
     owner: Optional[Principal] = None
+    tool_profile: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.tool_profile is not None and self.tool_profile not in VALID_TOOL_PROFILES:
+            raise ValueError(f"unknown tool_profile {self.tool_profile!r}")
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the session to a dictionary.
@@ -190,6 +213,12 @@ class Session:
         data = dict(data)
         if "status" in data:
             data["status"] = SessionStatus(data["status"])
+        # The tool profile is server-reserved: a ``tool_profile`` key buried
+        # in the client-writable config dict is not the binding and is dropped
+        # on load so it can never be read as one.
+        config = data.get("config")
+        if isinstance(config, dict) and "tool_profile" in config:
+            data["config"] = {k: v for k, v in config.items() if k != "tool_profile"}
         owner = data.get("owner")
         if isinstance(owner, dict):
             data["owner"] = Principal.from_dict(owner)

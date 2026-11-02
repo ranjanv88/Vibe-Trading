@@ -30,6 +30,80 @@ _SUBCLASSES_CACHE: list[type[BaseTool]] | None = None
 _DISCOVERY_FAILURES: dict[str, str] = {}
 _SHELL_TOOL_NAMES = {"bash", "background_run", "cancel_background"}
 
+#: The read-only session tool profile (see src.session.models). A registry
+#: built for this profile contains ONLY tools whose ``is_readonly`` metadata
+#: is true -- the tools' own classification is the source of truth.
+TOOL_PROFILE_RESEARCH_ONLY = "research_only"
+
+#: Defence-in-depth for the read-only profile: tools that must never appear
+#: in a research-only registry even if their ``is_readonly`` metadata is
+#: wrong or regresses. Enumerated explicitly because these are the dangerous
+#: capabilities the profile exists to deny -- file writes/edits, code
+#: execution (including backtest subprocesses and signal-engine scaffolding),
+#: order placement/cancellation and connection selection, swarm spawning,
+#: skill mutation, persistent-memory writes, goal/hypothesis mutation, and
+#: shadow-account persistence/report generation (whose classes previously
+#: inherited a default ``is_readonly=True`` despite writing to disk and
+#: executing backtests; their metadata is now fixed as well).
+READ_ONLY_PROFILE_HARD_EXCLUSIONS: frozenset[str] = frozenset({
+    # file writes / edits
+    "write_file", "edit_file",
+    # shell / background execution
+    "bash", "background_run", "cancel_background",
+    # code execution, incl. backtest subprocesses
+    "backtest", "generate_backtest_config", "scaffold_signal_engine",
+    "link_backtest", "link_autopilot_backtest", "run_research_autopilot",
+    "alpha_bench", "factor_analysis",
+    # order placement / cancellation / broker selection (incl. eToro)
+    "trading_place_order", "trading_cancel_order", "trading_select_connection",
+    "etoro_cancel_close_order", "etoro_close_position", "etoro_copy_close",
+    "etoro_copy_start", "etoro_edit_position_stops",
+    # swarm
+    "run_swarm",
+    # skill mutation
+    "save_skill", "patch_skill", "delete_skill", "skill_file",
+    # persistent / session-state mutation
+    "remember", "compact", "qveris_execute",
+    "start_research_goal", "add_goal_evidence", "update_research_goal_status",
+    "create_hypothesis", "update_hypothesis",
+    "refresh_strategy_evidence",
+    "sdm_decay_scan", "sdm_register", "sdm_status",
+    # shadow account: persists profiles, executes backtests, writes reports
+    "extract_shadow_strategy", "run_shadow_backtest", "render_shadow_report",
+})
+
+
+def apply_tool_profile(registry: ToolRegistry, tool_profile: str | None) -> ToolRegistry:
+    """Restrict ``registry`` in place to the session's tool profile.
+
+    ``None`` (the historical default) leaves the registry untouched. For
+    ``"research_only"``, every tool that is not classified read-only by its
+    own ``is_readonly`` metadata is removed, as is every tool named in
+    :data:`READ_ONLY_PROFILE_HARD_EXCLUSIONS` regardless of metadata. This
+    runs AFTER MCP wrappers are appended, and MCP remote tools carry
+    ``is_readonly=False``, so a research-only session also loses every
+    remote MCP tool -- a remote server cannot be used to smuggle write or
+    execution capability back into a bound session.
+
+    Raises:
+        ValueError: For an unknown profile name.
+    """
+    if tool_profile is None:
+        return registry
+    if tool_profile != TOOL_PROFILE_RESEARCH_ONLY:
+        raise ValueError(f"unknown tool_profile {tool_profile!r}")
+    removed = []
+    for name in list(registry.tool_names):
+        tool = registry.get(name)
+        if name in READ_ONLY_PROFILE_HARD_EXCLUSIONS or not getattr(tool, "is_readonly", False):
+            registry.remove(name)
+            removed.append(name)
+    logger.info(
+        "tool_profile=%s: removed %d non-read-only tool(s): %s",
+        tool_profile, len(removed), sorted(removed),
+    )
+    return registry
+
 
 def _discover_subclasses() -> list[type[BaseTool]]:
     """Import all modules in this package, then collect BaseTool subclasses.
@@ -82,6 +156,7 @@ def build_registry(
     event_callback: Callable[[str, dict], None] | None = None,
     warn_callback: Callable[[str], None] | None = None,
     interactive: bool | None = None,
+    tool_profile: str | None = None,
     _mcp_server_tool_name_segments: Mapping[str, str] | None = None,
 ) -> ToolRegistry:
     """Build the tool registry via auto-discovery, optionally enriched with MCP tools.
@@ -118,6 +193,10 @@ def build_registry(
             channel rather than blocking on a browser that cannot open
             (SPEC Transport §4). ``None`` (default) auto-detects via
             ``sys.stdin.isatty()``.
+        tool_profile: Optional session tool profile bound at session
+            creation. ``"research_only"`` restricts the finished registry
+            (local + MCP tools) to read-only tools; see
+            :func:`apply_tool_profile`. ``None`` keeps the full registry.
 
     Returns:
         ToolRegistry containing all available local tools followed by any
@@ -272,7 +351,7 @@ def build_registry(
                 if warn_callback is not None:
                     warn_callback(skip_msg)
 
-    return registry
+    return apply_tool_profile(registry, tool_profile)
 
 
 def build_filtered_registry(

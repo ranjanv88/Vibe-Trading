@@ -206,6 +206,7 @@ class SessionService:
         title: str = "",
         config: Optional[Dict[str, Any]] = None,
         owner: Optional["Principal"] = None,
+        tool_profile: Optional[str] = None,
     ) -> Session:
         """Create a new session.
 
@@ -218,11 +219,23 @@ class SessionService:
                 ``None``, which reads as "owner unknown" and is deliberately
                 distinct from a principal that authenticated but cannot be
                 attributed to a person (see ``Principal.attributable``).
+            tool_profile: Server-reserved tool profile to bind at creation
+                (``"research_only"`` restricts every registry built for this
+                session to read-only tools). Stored as a top-level field of
+                the session record, never inside ``config``; immutable after
+                creation (enforced in ``SessionStore.update_session``).
+                ``None`` keeps the historical full tool set.
 
         Returns:
             The newly created Session.
         """
-        session = Session(title=title, config=config or {}, owner=owner)
+        # Defence in depth against profile smuggling: a ``tool_profile`` key
+        # inside the client-writable config dict is NOT the binding and is
+        # stripped, so the only way to bind a profile is this parameter.
+        clean_config = {k: v for k, v in (config or {}).items() if k != "tool_profile"}
+        session = Session(
+            title=title, config=clean_config, owner=owner, tool_profile=tool_profile
+        )
         self.store.create_session(session)
         self._search_index.index_session(session.session_id, title)
         self.event_bus.emit(session.session_id, "session.created", {"session_id": session.session_id, "title": title})
@@ -362,6 +375,7 @@ class SessionService:
                 messages=messages,
                 include_shell_tools=include_shell_tools,
                 session_config=dict(session.config),
+                tool_profile=session.tool_profile,
             )
             status = result.get("status")
             if status == "success":
@@ -467,6 +481,41 @@ class SessionService:
             self._user_cancel_requests.discard(session.session_id)
             self._release_session(session.session_id)
 
+    def effective_tool_names(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the tool names a session's per-message registry would contain.
+
+        Builds the registry exactly the way :meth:`_run_with_agent` does
+        (same agent config resolution, same session tool profile) without
+        running the agent, so callers can verify a session's effective tool
+        surface -- in particular that a ``research_only`` session has no
+        write/exec/order/swarm/skill-mutation tools.
+
+        Returns:
+            ``{"session_id", "tool_profile", "tools", "count"}``, or None
+            when the session does not exist.
+        """
+        session = self.store.get_session(session_id)
+        if session is None:
+            return None
+        from src.config.loader import load_runtime_agent_config, sanitize_session_overrides
+        from src.tools import build_registry
+
+        safe_overrides = (
+            sanitize_session_overrides(session.config) if session.config else session.config
+        )
+        agent_config = load_runtime_agent_config(overrides=safe_overrides)
+        registry = build_registry(
+            agent_config=agent_config,
+            session_id=session_id,
+            tool_profile=session.tool_profile,
+        )
+        return {
+            "session_id": session_id,
+            "tool_profile": session.tool_profile,
+            "tools": sorted(registry.tool_names),
+            "count": len(registry),
+        }
+
     async def _run_with_agent(
         self,
         attempt: Attempt,
@@ -474,6 +523,7 @@ class SessionService:
         *,
         include_shell_tools: bool = False,
         session_config: Optional[Dict[str, Any]] = None,
+        tool_profile: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute an attempt with the V5 AgentLoop.
 
@@ -485,6 +535,11 @@ class SessionService:
                 definitions under the ``mcpServers`` key are merged on top of
                 the user config file via ``load_runtime_agent_config`` so each
                 session can extend or override the global MCP server list.
+            tool_profile: The session's server-reserved tool profile, bound
+                at creation. ``"research_only"`` restricts the registry to
+                read-only tools regardless of prompt content; the profile
+                also wins over ``include_shell_tools`` because shell tools
+                are not read-only.
 
         Returns:
             Result dictionary containing status, run_dir, run_id, metrics, and related fields.
@@ -537,6 +592,7 @@ class SessionService:
                 session_id=session_id,
                 event_callback=event_callback,
                 warn_callback=_mcp_collision_warn,
+                tool_profile=tool_profile,
             ),
         )
 

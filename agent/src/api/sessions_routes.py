@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -32,6 +32,15 @@ class CreateSessionRequest(BaseModel):
     """Create session request body."""
     title: str = Field("", description="Session title")
     config: Optional[Dict[str, Any]] = Field(None, description="Session config")
+    # Server-reserved tool profile, bound at creation and immutable
+    # afterwards (see src.session.models). "research_only" restricts every
+    # registry built for the session to read-only tools. It is a top-level
+    # field on purpose: the same key inside `config` is ignored, because
+    # config is client-writable session data. Unknown values are rejected
+    # with 422 by the Literal type.
+    tool_profile: Optional[Literal["research_only"]] = Field(
+        None, description="Server-reserved tool profile bound at creation"
+    )
 
 
 class SessionResponse(BaseModel):
@@ -42,6 +51,7 @@ class SessionResponse(BaseModel):
     created_at: str
     updated_at: str
     last_attempt_id: Optional[str] = None
+    tool_profile: Optional[str] = None
 
 
 # Bound interactive request size. This character limit is independent of the
@@ -401,7 +411,8 @@ def register_sessions_routes(app: FastAPI) -> None:
         if not svc:
             raise HTTPException(status_code=501, detail="Session runtime not enabled")
         session = svc.create_session(
-            title=request.title, config=request.config, owner=principal
+            title=request.title, config=request.config, owner=principal,
+            tool_profile=request.tool_profile,
         )
         return SessionResponse(
             session_id=session.session_id,
@@ -410,6 +421,7 @@ def register_sessions_routes(app: FastAPI) -> None:
             created_at=session.created_at,
             updated_at=session.updated_at,
             last_attempt_id=session.last_attempt_id,
+            tool_profile=session.tool_profile,
         )
 
     @app.get("/sessions", response_model=List[SessionResponse], dependencies=[Depends(require_auth)])
@@ -427,6 +439,7 @@ def register_sessions_routes(app: FastAPI) -> None:
                 created_at=s.created_at,
                 updated_at=s.updated_at,
                 last_attempt_id=s.last_attempt_id,
+                tool_profile=s.tool_profile,
             )
             for s in sessions
         ]
@@ -448,7 +461,26 @@ def register_sessions_routes(app: FastAPI) -> None:
             created_at=session.created_at,
             updated_at=session.updated_at,
             last_attempt_id=session.last_attempt_id,
+            tool_profile=session.tool_profile,
         )
+
+    @app.get("/sessions/{session_id}/tools", dependencies=[Depends(require_auth)])
+    async def get_session_tools(session_id: str):
+        """List the effective tool names for a session (names only).
+
+        The registry is built the same way the per-message path builds it,
+        including the session's bound tool profile, so this is the surface
+        to verify a ``research_only`` session really has no write, exec,
+        order, swarm or skill-mutation tools. No tool is executed.
+        """
+        _host_validate_path_param(session_id, "session_id")
+        svc = _host_get_session_service()
+        if not svc:
+            raise HTTPException(status_code=501, detail="Session runtime not enabled")
+        result = await asyncio.to_thread(svc.effective_tool_names, session_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        return result
 
     # -----------------------------------------------------------------------
     # Goal sub-group routes

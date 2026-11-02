@@ -81,6 +81,9 @@ class ExtractShadowStrategyTool(BaseTool):
     """Extract a Shadow Account profile from a user's trade journal."""
 
     name = "extract_shadow_strategy"
+    # Not read-only: the extracted profile is persisted under
+    # ~/.vibe-trading/shadow_accounts/.
+    is_readonly = False
     description = (
         "Extract implicit trading rules from the user's profitable roundtrips "
         "and produce a Shadow Account profile (3-5 human-readable if-then rules). "
@@ -163,6 +166,8 @@ class RunShadowBacktestTool(BaseTool):
     """Run multi-market backtest for an extracted Shadow Account."""
 
     name = "run_shadow_backtest"
+    # Not read-only: executes a backtest run and persists its results.
+    is_readonly = False
     description = (
         "Run a multi-market backtest (A股/港股/美股/crypto) on a Shadow Account "
         "profile and compute delta-PnL attribution vs the user's realized trades. "
@@ -249,6 +254,8 @@ class RenderShadowReportTool(BaseTool):
     """Render a Shadow Account PDF report from a completed backtest."""
 
     name = "render_shadow_report"
+    # Not read-only: writes HTML/PDF report files to disk.
+    is_readonly = False
     description = (
         "Generate the Shadow Account PDF (8 sections + charts) for a shadow_id. "
         "Requires a backtest to have been run; otherwise the report renders "

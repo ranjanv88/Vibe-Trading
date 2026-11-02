@@ -36,7 +36,14 @@ MIRRORED_TOOL_NAMES = (
 # profile subsequent READS use, and refresh_strategy_evidence (Phase 2, plan
 # D13: rebuilds ONLY the disposable facade-owned evidence cache from local run
 # artifacts — never Alpha Zoo/SDM sources of truth, no network, no credentials)
-# — not broker order flow.
+# — not broker order flow. factor_analysis and the three shadow-account
+# writers (extract_shadow_strategy, run_shadow_backtest,
+# render_shadow_report) joined this list when their is_readonly metadata
+# was corrected (2026-11-01 research-only closeout): each was already
+# exposed via MCP as a sandbox-research writer and always wrote to disk
+# (factor IC/equity outputs, persisted shadow profiles, shadow backtest
+# results, rendered reports); the classes previously inherited a default
+# is_readonly=True that hid that fact.
 #
 # This snapshot is the regression gate: adding an MCP tool that mutates
 # anything outside this list must fail the suite loudly.
@@ -45,7 +52,11 @@ KNOWN_MUTATING_MCP_TOOLS = frozenset(
         "add_goal_evidence",
         "alpha_bench",
         "backtest",
+        "extract_shadow_strategy",
+        "factor_analysis",
         "refresh_strategy_evidence",
+        "render_shadow_report",
+        "run_shadow_backtest",
         "run_swarm",
         "start_research_goal",
         "trading_select_connection",

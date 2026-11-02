@@ -109,6 +109,9 @@ class FactorAnalysisTool(BaseTool):
     """Factor analysis tool: compute IC/IR and layered NAV."""
 
     name = "factor_analysis"
+    # Not read-only: run_factor_analysis writes ic_series.csv,
+    # ic_summary.json and group_equity.csv into a caller-chosen output_dir.
+    is_readonly = False
     description = "Factor analysis: compute IC/IR/layered NAV. Input factor CSV and return CSV, output analysis report."
     parameters = {
         "type": "object",
